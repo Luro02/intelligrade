@@ -415,7 +415,10 @@ public class ExercisePanel extends SimpleToolWindowPanel {
     private void updateBacklogAndStats() {
         // Fetch data in the background, but do all UI updates on the EDT!
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            var exercise = PluginState.getInstance().getActiveExercise().orElseThrow();
+            var exercise = PluginState.getInstance().getActiveExercise().orElse(null);
+            if (exercise == null) {
+                return;
+            }
 
             List<ProgrammingSubmission> submissions;
             AssessmentStatsDTO stats;
