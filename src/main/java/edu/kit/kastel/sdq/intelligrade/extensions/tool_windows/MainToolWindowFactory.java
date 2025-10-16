@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2024. */
+/* Licensed under EPL-2.0 2024-2025. */
 package edu.kit.kastel.sdq.intelligrade.extensions.tool_windows;
 
 import com.intellij.openapi.project.DumbAware;
@@ -20,7 +20,8 @@ public class MainToolWindowFactory implements ToolWindowFactory, DumbAware {
     public void createToolWindowContent(@NotNull Project project, @NotNull ToolWindow toolWindow) {
         toolWindow
                 .getContentManager()
-                .addContent(ContentFactory.getInstance().createContent(new ExercisePanel(), "Exercise", false));
+                .addContent(
+                        ContentFactory.getInstance().createContent(new ExercisePanel(toolWindow), "Exercise", false));
         toolWindow
                 .getContentManager()
                 .addContent(ContentFactory.getInstance().createContent(new AssessmentPanel(), "Grading", false));
