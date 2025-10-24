@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2024. */
+/* Licensed under EPL-2.0 2024-2025. */
 package edu.kit.kastel.sdq.intelligrade.autograder;
 
 import java.io.IOException;
@@ -59,7 +59,8 @@ public class AutograderTask extends Task.Backgroundable {
         try {
             Consumer<String> statusConsumer = status -> indicator.setText("Autograder: " + status);
 
-            var stats = AutograderRunner.runAutograderFallible(assessment, clonedSubmission, Locale.GERMANY, 2, statusConsumer, null);
+            var stats = AutograderRunner.runAutograderFallible(
+                    assessment, clonedSubmission, Locale.GERMANY, 2, statusConsumer, null);
 
             String message = "Autograder made %d annotation(s). Please double-check all of them for false-positives!"
                     .formatted(stats.annotationsMade());
