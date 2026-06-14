@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.state;
 
 import java.nio.file.Path;
@@ -10,6 +10,7 @@ import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
+import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.util.TextRange;
 import edu.kit.kastel.sdq.artemis4j.grading.Annotation;
 import edu.kit.kastel.sdq.artemis4j.grading.Assessment;
@@ -69,12 +70,12 @@ public class ActiveAssessment {
 
         if (!caret.hasSelection()) {
             // highlight the entire line if no selection was made:
-            int offset = ReadAction.compute(caret::getOffset);
+            int offset = ReadAction.computeBlocking(caret::getOffset);
             int lineNumber = editor.getDocument().getLineNumber(offset);
             return new Location(path, lineNumber, lineNumber);
         }
 
-        TextRange textRange = ReadAction.compute(caret::getSelectionRange);
+        TextRange textRange = ReadAction.computeBlocking(caret::getSelectionRange);
 
         int startOffset = textRange.getStartOffset();
         int endOffset = textRange.getEndOffset();
@@ -106,9 +107,16 @@ public class ActiveAssessment {
             return;
         }
 
+        var file = FileDocumentManager.getInstance().getFile(editor.getDocument());
+        if (file == null || !file.isInLocalFileSystem()) {
+            ArtemisUtils.displayGenericErrorBalloon(
+                    "No local file selected", "Cannot create annotation without a local source file");
+            return;
+        }
+
         var path = Path.of(IntellijUtil.getActiveProject().getBasePath())
                 .resolve(ASSIGNMENT_SUB_PATH)
-                .relativize(editor.getVirtualFile().toNioPath())
+                .relativize(file.toNioPath())
                 .toString()
                 .replace("\\", "/");
         var location = createLocationFromSelection(editor, path);
