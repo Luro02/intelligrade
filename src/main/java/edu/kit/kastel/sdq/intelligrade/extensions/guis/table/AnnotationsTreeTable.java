@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.extensions.guis.table;
 
 import java.awt.Component;
@@ -13,6 +13,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 import javax.swing.JLabel;
@@ -24,10 +25,13 @@ import javax.swing.table.TableCellRenderer;
 import javax.swing.table.TableColumnModel;
 import javax.swing.tree.TreePath;
 
+import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
+import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.DoubleClickListener;
 import com.intellij.ui.treeStructure.treetable.TreeTable;
 import com.intellij.ui.treeStructure.treetable.TreeTableCellRenderer;
@@ -183,16 +187,33 @@ public class AnnotationsTreeTable extends TreeTable {
                 } else {
                     // Jump to the line in the editor
                     var file = IntellijUtil.getAnnotationFile(annotation);
-                    var document = FileDocumentManager.getInstance().getDocument(file);
-                    int offset = document.getLineStartOffset(annotation.getStartLine());
+                    var offset = getAnnotationOffset(file, annotation);
+                    if (offset.isEmpty()) {
+                        return true;
+                    }
+
                     FileEditorManager.getInstance(IntellijUtil.getActiveProject())
                             .openTextEditor(
-                                    new OpenFileDescriptor(IntellijUtil.getActiveProject(), file, offset), true);
+                                    new OpenFileDescriptor(IntellijUtil.getActiveProject(), file, offset.get()), true);
                 }
 
                 return true;
             }
         }.installOn(this);
+    }
+
+    private static Optional<Integer> getAnnotationOffset(VirtualFile file, Annotation annotation) {
+        return ReadAction.computeBlocking(() -> {
+            Document document = FileDocumentManager.getInstance().getDocument(file);
+            if (document == null
+                    || annotation.getStartLine() < 0
+                    || annotation.getStartLine() >= document.getLineCount()) {
+                LOG.warn("Cannot open annotation with invalid location: " + annotation.getLocation());
+                return Optional.empty();
+            }
+
+            return Optional.of(document.getLineStartOffset(annotation.getStartLine()));
+        });
     }
 
     private void installKeyboardListener() {
