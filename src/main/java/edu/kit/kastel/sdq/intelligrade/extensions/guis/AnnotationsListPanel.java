@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.extensions.guis;
 
 import java.awt.EventQueue;
@@ -12,6 +12,7 @@ import java.util.Set;
 import javax.swing.JButton;
 import javax.swing.tree.TreePath;
 
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
@@ -44,8 +45,11 @@ public class AnnotationsListPanel extends SimpleToolWindowPanel {
                 toolWindow.getContentManager().getContent(0).getComponent();
     }
 
-    public AnnotationsListPanel() {
+    private final Disposable parentDisposable;
+
+    public AnnotationsListPanel(Disposable parentDisposable) {
         super(true, true);
+        this.parentDisposable = parentDisposable;
 
         model = new AnnotationsTableModel();
         table = new AnnotationsTreeTable(model);
@@ -68,12 +72,16 @@ public class AnnotationsListPanel extends SimpleToolWindowPanel {
 
                             // restore the expanded paths
                             table.getTree().expandPaths(expandedPaths);
-                        }));
+                        }),
+                        parentDisposable);
 
-        PluginState.getInstance().registerAssessmentClosedListener(() -> {
-            model.setAnnotations(List.of());
-            table.updateUI();
-        });
+        PluginState.getInstance()
+                .registerAssessmentClosedListener(
+                        () -> {
+                            model.setAnnotations(List.of());
+                            table.updateUI();
+                        },
+                        parentDisposable);
     }
 
     public void selectAnnotation(Annotation annotation) {
@@ -122,13 +130,16 @@ public class AnnotationsListPanel extends SimpleToolWindowPanel {
             }
         };
         // only show the restore button in review mode
-        PluginState.getInstance().registerAssessmentStartedListener(assessment -> {
-            if (assessment.isReview()) {
-                group.addAction(restoreButton);
-            } else {
-                group.remove(restoreButton);
-            }
-        });
+        PluginState.getInstance()
+                .registerAssessmentStartedListener(
+                        assessment -> {
+                            if (assessment.isReview()) {
+                                group.addAction(restoreButton);
+                            } else {
+                                group.remove(restoreButton);
+                            }
+                        },
+                        parentDisposable);
 
         // Adds a debug button to the right-click menu in the table.
         //

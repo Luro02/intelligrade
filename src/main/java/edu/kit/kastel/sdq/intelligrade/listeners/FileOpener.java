@@ -1,9 +1,10 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.listeners;
 
 import java.util.Arrays;
 
 import com.intellij.ide.projectView.ProjectView;
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.components.Service;
@@ -28,7 +29,7 @@ import edu.kit.kastel.sdq.intelligrade.state.PluginState;
 import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtil;
 
 @Service
-public final class FileOpener implements DumbService.DumbModeListener {
+public final class FileOpener implements DumbService.DumbModeListener, Disposable {
     private static final Logger LOG = Logger.getInstance(FileOpener.class);
 
     private volatile boolean openClassesNextTime = false;
@@ -38,19 +39,32 @@ public final class FileOpener implements DumbService.DumbModeListener {
     }
 
     public FileOpener() {
-        PluginState.getInstance().registerAssessmentStartedListener(a -> {
-            var settings = ArtemisSettingsState.getInstance();
-            synchronized (this) {
-                openClassesNextTime = settings.isAutoOpenMainClass();
-            }
-        });
+        PluginState.getInstance()
+                .registerAssessmentStartedListener(
+                        a -> {
+                            var settings = ArtemisSettingsState.getInstance();
+                            synchronized (this) {
+                                openClassesNextTime = settings.isAutoOpenMainClass();
+                            }
+                        },
+                        this);
 
-        PluginState.getInstance().registerAssessmentClosedListener(() -> {
-            // Relevant if building indices is not finished before the assessment is closed
-            synchronized (this) {
-                openClassesNextTime = false;
-            }
-        });
+        PluginState.getInstance()
+                .registerAssessmentClosedListener(
+                        () -> {
+                            // Relevant if building indices is not finished before the assessment is closed
+                            synchronized (this) {
+                                openClassesNextTime = false;
+                            }
+                        },
+                        this);
+    }
+
+    @Override
+    public void dispose() {
+        synchronized (this) {
+            openClassesNextTime = false;
+        }
     }
 
     @Override

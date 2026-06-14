@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.state;
 
 import java.io.IOException;
@@ -14,9 +14,12 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.ui.MessageDialogBuilder;
+import com.intellij.openapi.util.Disposer;
 import com.intellij.ui.jcef.JBCefApp;
 import edu.kit.kastel.sdq.artemis4j.ArtemisClientException;
 import edu.kit.kastel.sdq.artemis4j.ArtemisNetworkException;
@@ -40,10 +43,9 @@ import edu.kit.kastel.sdq.intelligrade.login.CefUtils;
 import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils;
 import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtil;
 
-public class PluginState {
+@Service
+public final class PluginState {
     private static final Logger LOG = Logger.getInstance(PluginState.class);
-
-    private static PluginState pluginState;
 
     private final List<Consumer<ArtemisConnection>> connectedListeners = new ArrayList<>();
     private final List<Consumer<ProgrammingExercise>> exerciseSelectedListeners = new ArrayList<>();
@@ -59,7 +61,7 @@ public class PluginState {
 
     private ActiveAssessment activeAssessment;
 
-    private PluginState() {
+    public PluginState() {
         // The code for opening/closing assessments is in kotlin, but this class keeps track of the active assessment
         // as well.
         //
@@ -86,10 +88,7 @@ public class PluginState {
     }
 
     public static PluginState getInstance() {
-        if (pluginState == null) {
-            pluginState = new PluginState();
-        }
-        return pluginState;
+        return ApplicationManager.getApplication().getService(PluginState.class);
     }
 
     /**
@@ -178,8 +177,9 @@ public class PluginState {
      *
      * @param listener the listener to be called
      */
-    public void registerMissingGradingConfigListeners(Runnable listener) {
+    public void registerMissingGradingConfigListeners(Runnable listener, Disposable parentDisposable) {
         this.missingGradingConfigListeners.add(listener);
+        Disposer.register(parentDisposable, () -> this.missingGradingConfigListeners.remove(listener));
     }
 
     /**
@@ -189,21 +189,25 @@ public class PluginState {
      *
      * @param listener the listener to be called
      */
-    public void registerGradingConfigChangedListener(Consumer<GradingConfig.GradingConfigDTO> listener) {
+    public void registerGradingConfigChangedListener(
+            Consumer<GradingConfig.GradingConfigDTO> listener, Disposable parentDisposable) {
         this.gradingConfigChangedListeners.add(listener);
+        Disposer.register(parentDisposable, () -> this.gradingConfigChangedListeners.remove(listener));
         if (this.cachedGradingConfigDTO != null) {
             // If the grading config is already loaded, call the listener immediately
             listener.accept(this.cachedGradingConfigDTO);
         }
     }
 
-    public void registerConnectedListener(Consumer<ArtemisConnection> listener) {
+    public void registerConnectedListener(Consumer<ArtemisConnection> listener, Disposable parentDisposable) {
         this.connectedListeners.add(listener);
+        Disposer.register(parentDisposable, () -> this.connectedListeners.remove(listener));
         listener.accept(this.connection);
     }
 
-    public void registerExerciseSelectedListener(Consumer<ProgrammingExercise> listener) {
+    public void registerExerciseSelectedListener(Consumer<ProgrammingExercise> listener, Disposable parentDisposable) {
         this.exerciseSelectedListeners.add(listener);
+        Disposer.register(parentDisposable, () -> this.exerciseSelectedListeners.remove(listener));
         listener.accept(this.activeExercise);
     }
 
@@ -362,15 +366,17 @@ public class PluginState {
         return activeExercise.getCourse().isInstructor(getAssessor());
     }
 
-    public void registerAssessmentStartedListener(Consumer<ActiveAssessment> listener) {
+    public void registerAssessmentStartedListener(Consumer<ActiveAssessment> listener, Disposable parentDisposable) {
         this.assessmentStartedListeners.add(listener);
+        Disposer.register(parentDisposable, () -> this.assessmentStartedListeners.remove(listener));
         if (this.isAssessing()) {
             listener.accept(activeAssessment);
         }
     }
 
-    public void registerAssessmentClosedListener(Runnable listener) {
+    public void registerAssessmentClosedListener(Runnable listener, Disposable parentDisposable) {
         this.assessmentClosedListeners.add(listener);
+        Disposer.register(parentDisposable, () -> this.assessmentClosedListeners.remove(listener));
     }
 
     private void resetState() {

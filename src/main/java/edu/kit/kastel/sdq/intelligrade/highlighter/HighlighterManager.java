@@ -114,15 +114,20 @@ public final class HighlighterManager implements Disposable {
                 });
 
         PluginState.getInstance()
-                .registerAssessmentStartedListener(assessment -> assessment.registerAnnotationsUpdatedListener(
-                        annotations -> updateHighlightersForAllEditors()));
+                .registerAssessmentStartedListener(
+                        assessment -> assessment.registerAnnotationsUpdatedListener(
+                                annotations -> updateHighlightersForAllEditors()),
+                        this);
 
         // When an assessment is closed, clear everything
-        PluginState.getInstance().registerAssessmentClosedListener(() -> {
-            clearAllHighlighters();
-            restoreDocumentReadOnlyStates();
-            cancelLastPopup();
-        });
+        PluginState.getInstance()
+                .registerAssessmentClosedListener(
+                        () -> {
+                            clearAllHighlighters();
+                            restoreDocumentReadOnlyStates();
+                            cancelLastPopup();
+                        },
+                        this);
     }
 
     @Override

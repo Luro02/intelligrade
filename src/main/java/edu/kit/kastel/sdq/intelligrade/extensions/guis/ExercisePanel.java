@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.extensions.guis;
 
 import java.awt.event.ItemEvent;
@@ -13,6 +13,7 @@ import javax.swing.ScrollPaneConstants;
 import javax.swing.event.DocumentEvent;
 import javax.swing.text.JTextComponent;
 
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory;
@@ -101,7 +102,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
         return new ComboBox<>(0);
     }
 
-    public ExercisePanel(ToolWindow toolWindow) {
+    public ExercisePanel(ToolWindow toolWindow, Disposable parentDisposable) {
         super(true, true);
 
         this.parentToolWindow = toolWindow;
@@ -160,14 +161,15 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
         courseSelector.addItemListener(this::handleCourseSelected);
 
-        PluginState.getInstance().registerConnectedListener(this::handleConnectionChange);
+        PluginState.getInstance().registerConnectedListener(this::handleConnectionChange, parentDisposable);
 
-        PluginState.getInstance().registerAssessmentStartedListener(this::handleAssessmentStarted);
+        PluginState.getInstance().registerAssessmentStartedListener(this::handleAssessmentStarted, parentDisposable);
 
-        PluginState.getInstance().registerAssessmentClosedListener(this::handleAssessmentClosed);
+        PluginState.getInstance().registerAssessmentClosedListener(this::handleAssessmentClosed, parentDisposable);
 
         PluginState.getInstance()
-                .registerGradingConfigChangedListener(gradingConfigDTO -> this.handleGradingConfigChanged());
+                .registerGradingConfigChangedListener(
+                        gradingConfigDTO -> this.handleGradingConfigChanged(), parentDisposable);
     }
 
     private void createGeneralPanel() {
