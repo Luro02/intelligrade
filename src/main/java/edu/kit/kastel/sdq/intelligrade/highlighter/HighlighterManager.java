@@ -1,20 +1,30 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.highlighter;
 
 import java.awt.Font;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 import javax.swing.Icon;
 
 import com.intellij.DynamicBundle;
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.actionSystem.ActionGroup;
 import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
+import com.intellij.openapi.application.ModalityState;
+import com.intellij.openapi.application.ReadAction;
+import com.intellij.openapi.application.WriteAction;
+import com.intellij.openapi.components.Service;
+import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.editor.event.EditorMouseEvent;
 import com.intellij.openapi.editor.markup.EffectType;
@@ -27,52 +37,81 @@ import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.FileEditorManagerListener;
 import com.intellij.openapi.fileEditor.TextEditor;
+import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.popup.JBPopup;
 import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.AnActionButton;
+import com.intellij.util.concurrency.AppExecutorUtil;
 import edu.kit.kastel.sdq.artemis4j.grading.Annotation;
 import edu.kit.kastel.sdq.artemis4j.grading.penalty.MistakeType;
 import edu.kit.kastel.sdq.intelligrade.extensions.guis.AnnotationsListPanel;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
 import edu.kit.kastel.sdq.intelligrade.icons.ArtemisIcons;
+import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment;
 import edu.kit.kastel.sdq.intelligrade.state.PluginState;
-import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtil;
 import org.jspecify.annotations.NonNull;
 
 /**
  * This class manages the highlights (the colored lines that indicate an annotation) in the editor.
  */
-public class HighlighterManager {
-    private static final Map<Editor, List<HighlighterWithAnnotations>> highlightersPerEditor = new IdentityHashMap<>();
+@Service(Service.Level.PROJECT)
+public final class HighlighterManager implements Disposable {
+    private static final Logger LOG = Logger.getInstance(HighlighterManager.class);
+
+    private final Project project;
+    private final Map<Editor, List<HighlighterWithAnnotations>> highlightersPerEditor = new IdentityHashMap<>();
+    private final Map<Document, Boolean> originalReadOnlyStateByDocument = new IdentityHashMap<>();
+    private boolean initialized;
 
     // private static int lastPopupLine;
     // private static Editor lastPopupEditor;
-    private static JBPopup lastPopup;
+    private JBPopup lastPopup;
 
-    public static void initialize() {
-        var messageBus = IntellijUtil.getActiveProject().getMessageBus();
-        messageBus.connect().subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER, new FileEditorManagerListener() {
-            @Override
-            public void fileOpened(@NonNull FileEditorManager source, @NonNull VirtualFile file) {
-                var editor = source.getSelectedTextEditor();
+    public HighlighterManager(Project project) {
+        this.project = project;
+    }
 
-                if (PluginState.getInstance().isAssessing() && editor != null) {
-                    editor.getDocument().setReadOnly(true);
-                    updateHighlightersForEditor(editor);
-                }
-            }
+    public static HighlighterManager initialize(@NonNull Project project) {
+        var manager = project.getService(HighlighterManager.class);
+        manager.initialize();
+        return manager;
+    }
 
-            @Override
-            public void fileClosed(@NonNull FileEditorManager source, @NonNull VirtualFile file) {
-                var editor = source.getSelectedTextEditor();
-                if (editor == null) {
-                    return;
-                }
+    public static void onMouseMovedInEditor(EditorMouseEvent event) {
+        var project = event.getEditor().getProject();
+        if (project == null) {
+            return;
+        }
 
-                clearHighlightersForEditor(editor);
-            }
-        });
+        project.getService(HighlighterManager.class).onMouseMoved(event);
+    }
+
+    private void initialize() {
+        if (initialized) {
+            return;
+        }
+
+        initialized = true;
+        var messageBus = project.getMessageBus();
+        messageBus
+                .connect(this)
+                .subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER, new FileEditorManagerListener() {
+                    @Override
+                    public void fileOpened(@NonNull FileEditorManager source, @NonNull VirtualFile file) {
+                        var editor = source.getSelectedTextEditor();
+
+                        if (PluginState.getInstance().isAssessing() && editor != null) {
+                            makeDocumentReadOnly(editor.getDocument());
+                            updateHighlightersForEditor(editor);
+                        }
+                    }
+
+                    @Override
+                    public void fileClosed(@NonNull FileEditorManager source, @NonNull VirtualFile file) {
+                        clearHighlightersForFile(file);
+                    }
+                });
 
         PluginState.getInstance()
                 .registerAssessmentStartedListener(assessment -> assessment.registerAnnotationsUpdatedListener(
@@ -80,12 +119,20 @@ public class HighlighterManager {
 
         // When an assessment is closed, clear everything
         PluginState.getInstance().registerAssessmentClosedListener(() -> {
-            highlightersPerEditor.clear();
+            clearAllHighlighters();
+            restoreDocumentReadOnlyStates();
             cancelLastPopup();
         });
     }
 
-    public static void onMouseMovedInEditor(EditorMouseEvent e) {
+    @Override
+    public void dispose() {
+        clearAllHighlighters();
+        restoreDocumentReadOnlyStates();
+        cancelLastPopup();
+    }
+
+    private void onMouseMoved(EditorMouseEvent e) {
         // TODO Later implement feature
         // var highlighters = highlightersPerEditor.get(e.getEditor());
         // if (highlighters == null) {
@@ -137,17 +184,27 @@ public class HighlighterManager {
      * @param editor the editor on which the highlighter should be created
      * @param annotations the annotations to be highlighted
      */
-    private static void createHighlighter(Editor editor, List<Annotation> annotations) {
-        var document = FileDocumentManager.getInstance().getDocument(editor.getVirtualFile());
+    private void createHighlighter(Editor editor, List<Annotation> annotations) {
+        var file = getEditorFile(editor);
+        if (file.isEmpty()) {
+            return;
+        }
 
-        if (document == null) {
+        var document = editor.getDocument();
+        if (annotations.isEmpty()) {
             return;
         }
 
         var annotationColor = ArtemisSettingsState.getInstance().getAnnotationColor();
 
         List<RangeHighlighter> highlighters = new ArrayList<>();
+        List<Annotation> highlightedAnnotations = new ArrayList<>();
         for (Annotation annotation : annotations) {
+            var offsetRange = getOffsetRange(document, annotation, file.get());
+            if (offsetRange.isEmpty()) {
+                continue;
+            }
+
             // Lines that have NONE as highlight, should still be highlighted, but invisible to the user.
             // This is necessary for the gutter icon.
             var attributes = new TextAttributes(
@@ -157,36 +214,30 @@ public class HighlighterManager {
                 attributes = new TextAttributes();
             }
 
-            var location = annotation.getLocation();
-
-            // resolve the start of the annotation (the start offset of the line + column)
-            int startOffset = document.getLineStartOffset(location.start().line())
-                    + location.start().column().orElse(0);
-            // if the column is present, it has to be added to the start offset of the last line
-            // otherwise the end offset is the end of the line
-            //
-            // The endOffset seems to be exclusive. The getLineEndOffset will return the correct offset,
-            // but for our calculated column through the start offset, we have to add 1 to obtain the correct end
-            // offset.
-            int endOffset = location.end()
-                    .column()
-                    .map(endColumn -> document.getLineStartOffset(location.end().line()) + endColumn + 1)
-                    .orElseGet(() -> document.getLineEndOffset(location.end().line()));
-
             var range = HighlighterTargetArea.EXACT_RANGE;
-            if (startOffset == endOffset || startOffset + 1 == endOffset) {
+            if (offsetRange.get().isEmptyOrSingleCharacter()) {
                 // if the start and end offset are the same, we highlight the entire line
                 range = HighlighterTargetArea.LINES_IN_RANGE;
             }
 
             highlighters.add(editor.getMarkupModel()
-                    .addRangeHighlighter(startOffset, endOffset, HighlighterLayer.SELECTION - 1, attributes, range));
+                    .addRangeHighlighter(
+                            offsetRange.get().startOffset(),
+                            offsetRange.get().endOffset(),
+                            HighlighterLayer.SELECTION - 1,
+                            attributes,
+                            range));
+            highlightedAnnotations.add(annotation);
+        }
+
+        if (highlighters.isEmpty()) {
+            return;
         }
 
         // use the first highlighter for the gutter icon
         var highlighter = highlighters.getFirst();
 
-        String gutterTooltip = annotations.stream()
+        String gutterTooltip = highlightedAnnotations.stream()
                 .map(a -> {
                     String text = "<strong>"
                             + a.getMistakeType().getButtonText().translateTo(DynamicBundle.getLocale()) + "</strong>";
@@ -202,55 +253,19 @@ public class HighlighterManager {
                 })
                 .collect(Collectors.joining("<br><br>"));
 
-        var popupActions = getGutterPopupActions(annotations);
-
-        highlighter.setGutterIconRenderer(new GutterIconRenderer() {
-            @Override
-            public boolean equals(Object o) {
-                // TODO implement some actually useful equals method
-                return false;
-            }
-
-            @Override
-            public int hashCode() {
-                return 0;
-            }
-
-            @Override
-            public @NonNull Icon getIcon() {
-                return switch (annotations.size()) {
-                    case 1 -> ArtemisIcons.AnnotationsGutter1;
-                    case 2 -> ArtemisIcons.AnnotationsGutter2;
-                    case 3 -> ArtemisIcons.AnnotationsGutter3;
-                    default -> ArtemisIcons.AnnotationsGutter4;
-                };
-            }
-
-            @Override
-            public String getTooltipText() {
-                return gutterTooltip;
-            }
-
-            @Override
-            public ActionGroup getPopupMenuActions() {
-                return popupActions;
-            }
-
-            @Override
-            public boolean isDumbAware() {
-                return true;
-            }
-        });
+        highlighter.setGutterIconRenderer(new AnnotationGutterIconRenderer(
+                highlightedAnnotations, gutterTooltip, getGutterPopupActions(highlightedAnnotations)));
 
         highlightersPerEditor.computeIfAbsent(editor, e -> new ArrayList<>());
         for (int i = 0; i < highlighters.size(); i++) {
             highlightersPerEditor
                     .get(editor)
-                    .add(new HighlighterWithAnnotations(highlighters.get(i), List.of(annotations.get(i))));
+                    .add(new HighlighterWithAnnotations(
+                            highlighters.get(i), List.of(highlightedAnnotations.get(i)), file.get()));
         }
     }
 
-    private static void cancelLastPopup() {
+    private void cancelLastPopup() {
         // if (lastPopup != null) {
         //     if (!lastPopup.isDisposed()) {
         //         lastPopup.cancel();
@@ -261,44 +276,172 @@ public class HighlighterManager {
         // }
     }
 
-    private static void updateHighlightersForAllEditors() {
+    private void updateHighlightersForAllEditors() {
         if (!PluginState.getInstance().isAssessing()) {
             return;
         }
 
-        var editors =
-                FileEditorManager.getInstance(IntellijUtil.getActiveProject()).getAllEditors();
+        var editors = FileEditorManager.getInstance(project).getAllEditors();
         for (var editor : editors) {
-            updateHighlightersForEditor(((TextEditor) editor).getEditor());
+            if (editor instanceof TextEditor textEditor) {
+                makeDocumentReadOnly(textEditor.getEditor().getDocument());
+                updateHighlightersForEditor(textEditor.getEditor());
+            }
         }
 
         cancelLastPopup();
     }
 
-    private static void updateHighlightersForEditor(Editor editor) {
+    private void updateHighlightersForEditor(Editor editor) {
+        var file = getEditorFile(editor);
         // E.g. decompiled classes are not in the local file system
         // Since they are never part of an assessment, ignore them
-        if (!editor.getVirtualFile().isInLocalFileSystem()) {
+        if (file.isEmpty() || !file.get().isInLocalFileSystem()) {
             return;
         }
 
         clearHighlightersForEditor(editor);
 
-        var filePath = editor.getVirtualFile().toNioPath();
+        var filePath = file.get().toNioPath();
         var state = PluginState.getInstance();
-        var assessment = state.getActiveAssessment().orElseThrow().getAssessment();
-        var annotationsByLine = assessment
-                .streamAllAnnotations(false)
-                .filter(a -> IntellijUtil.getAnnotationPath(a).equals(filePath))
-                .collect(Collectors.groupingBy(Annotation::getStartLine));
-        for (var annotations : annotationsByLine.values()) {
-            createHighlighter(editor, annotations);
+        ReadAction.nonBlocking(() -> {
+                    var assessment = state.getActiveAssessment().orElseThrow().getAssessment();
+                    return assessment
+                            .streamAllAnnotations(false)
+                            .filter(a ->
+                                    getAnnotationPath(a).map(filePath::equals).orElse(false))
+                            .collect(Collectors.groupingBy(Annotation::getStartLine));
+                })
+                .expireWhen(() -> editor.isDisposed() || project.isDisposed() || !state.isAssessing())
+                .finishOnUiThread(ModalityState.defaultModalityState(), annotationsByLine -> {
+                    if (!state.isAssessing() || editor.isDisposed()) {
+                        return;
+                    }
+
+                    for (var annotations : annotationsByLine.values()) {
+                        createHighlighter(editor, annotations);
+                    }
+                })
+                .submit(AppExecutorUtil.getAppExecutorService());
+    }
+
+    private void clearHighlightersForEditor(Editor editor) {
+        var highlighters = highlightersPerEditor.remove(editor);
+        if (highlighters == null || editor.isDisposed()) {
+            return;
+        }
+
+        for (var highlighter : highlighters) {
+            editor.getMarkupModel().removeHighlighter(highlighter.highlighter());
         }
     }
 
-    private static void clearHighlightersForEditor(Editor editor) {
-        highlightersPerEditor.remove(editor);
-        editor.getMarkupModel().removeAllHighlighters();
+    private void clearHighlightersForFile(VirtualFile file) {
+        var editors = new ArrayList<>(highlightersPerEditor.keySet());
+        for (var editor : editors) {
+            var highlighters = highlightersPerEditor.get(editor);
+            if (highlighters == null) {
+                continue;
+            }
+
+            var matchingHighlighters = highlighters.stream()
+                    .filter(highlighter -> highlighter.file().equals(file))
+                    .toList();
+            if (matchingHighlighters.isEmpty()) {
+                continue;
+            }
+
+            if (!editor.isDisposed()) {
+                for (var highlighter : matchingHighlighters) {
+                    editor.getMarkupModel().removeHighlighter(highlighter.highlighter());
+                }
+            }
+
+            highlighters.removeAll(matchingHighlighters);
+            if (highlighters.isEmpty()) {
+                highlightersPerEditor.remove(editor);
+            }
+        }
+    }
+
+    private void clearAllHighlighters() {
+        var editors = new ArrayList<>(highlightersPerEditor.keySet());
+        for (var editor : editors) {
+            clearHighlightersForEditor(editor);
+        }
+        highlightersPerEditor.clear();
+    }
+
+    private void makeDocumentReadOnly(Document document) {
+        if (originalReadOnlyStateByDocument.containsKey(document)) {
+            return;
+        }
+
+        originalReadOnlyStateByDocument.put(document, !document.isWritable());
+        if (document.isWritable()) {
+            WriteAction.run(() -> document.setReadOnly(true));
+        }
+    }
+
+    private void restoreDocumentReadOnlyStates() {
+        if (originalReadOnlyStateByDocument.isEmpty()) {
+            return;
+        }
+
+        WriteAction.run(() -> originalReadOnlyStateByDocument.forEach(Document::setReadOnly));
+        originalReadOnlyStateByDocument.clear();
+    }
+
+    private static Optional<VirtualFile> getEditorFile(Editor editor) {
+        return Optional.ofNullable(FileDocumentManager.getInstance().getFile(editor.getDocument()));
+    }
+
+    private Optional<OffsetRange> getOffsetRange(Document document, Annotation annotation, VirtualFile file) {
+        var location = annotation.getLocation();
+        var startLine = location.start().line();
+        var endLine = location.end().line();
+
+        if (!isValidLine(document, startLine) || !isValidLine(document, endLine) || startLine > endLine) {
+            LOG.warn("Skipping annotation with invalid line range in %s: %s".formatted(file.getPath(), location));
+            return Optional.empty();
+        }
+
+        var startOffset =
+                getLineOffset(document, startLine, location.start().column().orElse(0), false);
+        int endOffset = location.end()
+                .column()
+                .map(endColumn -> getLineOffset(document, endLine, endColumn, true))
+                .orElseGet(() -> document.getLineEndOffset(endLine));
+
+        if (endOffset < startOffset) {
+            LOG.warn("Skipping annotation with invalid offset range in %s: %s".formatted(file.getPath(), location));
+            return Optional.empty();
+        }
+
+        return Optional.of(new OffsetRange(startOffset, endOffset));
+    }
+
+    private static boolean isValidLine(Document document, int line) {
+        return line >= 0 && line < document.getLineCount();
+    }
+
+    private static int getLineOffset(Document document, int line, int column, boolean endColumn) {
+        var lineStartOffset = document.getLineStartOffset(line);
+        var lineLength = document.getLineEndOffset(line) - lineStartOffset;
+        var exclusiveColumn = endColumn ? column + 1 : column;
+
+        return lineStartOffset + Math.clamp(exclusiveColumn, 0, lineLength);
+    }
+
+    private Optional<Path> getAnnotationPath(Annotation annotation) {
+        var basePath = project.getBasePath();
+        if (basePath == null) {
+            return Optional.empty();
+        }
+
+        return Optional.of(Path.of(basePath)
+                .resolve(ActiveAssessment.ASSIGNMENT_SUB_PATH)
+                .resolve(annotation.getFilePath().replace("\\", "/")));
     }
 
     private static ActionGroup getGutterPopupActions(List<Annotation> annotations) {
@@ -335,5 +478,86 @@ public class HighlighterManager {
         return StringUtil.escapeMnemonics(StringUtil.shortenTextWithEllipsis(text, 80, 0));
     }
 
-    private record HighlighterWithAnnotations(RangeHighlighter highlighter, List<Annotation> annotation) {}
+    private record OffsetRange(int startOffset, int endOffset) {
+        private boolean isEmptyOrSingleCharacter() {
+            return startOffset == endOffset || startOffset + 1 == endOffset;
+        }
+    }
+
+    private static final class AnnotationGutterIconRenderer extends GutterIconRenderer {
+        private final int annotationCount;
+        private final String tooltipText;
+        private final ActionGroup popupActions;
+        private final String annotationSignature;
+
+        private AnnotationGutterIconRenderer(
+                List<Annotation> annotations, String tooltipText, ActionGroup popupActions) {
+            this.annotationCount = annotations.size();
+            this.tooltipText = tooltipText;
+            this.popupActions = popupActions;
+            this.annotationSignature = getAnnotationSignature(annotations);
+        }
+
+        private static String getAnnotationSignature(List<Annotation> annotations) {
+            return annotations.stream()
+                    .map(annotation -> "%s:%s:%s:%s:%s"
+                            .formatted(
+                                    annotation.getFilePath(),
+                                    annotation.getLocation(),
+                                    annotation.getMistakeType(),
+                                    annotation.getCustomMessage().orElse(""),
+                                    annotation
+                                            .getCustomScore()
+                                            .map(String::valueOf)
+                                            .orElse("")))
+                    .collect(Collectors.joining("|"));
+        }
+
+        @Override
+        public @NonNull Icon getIcon() {
+            return switch (annotationCount) {
+                case 1 -> ArtemisIcons.AnnotationsGutter1;
+                case 2 -> ArtemisIcons.AnnotationsGutter2;
+                case 3 -> ArtemisIcons.AnnotationsGutter3;
+                default -> ArtemisIcons.AnnotationsGutter4;
+            };
+        }
+
+        @Override
+        public String getTooltipText() {
+            return tooltipText;
+        }
+
+        @Override
+        public ActionGroup getPopupMenuActions() {
+            return popupActions;
+        }
+
+        @Override
+        public boolean isDumbAware() {
+            return true;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+
+            if (!(o instanceof AnnotationGutterIconRenderer renderer)) {
+                return false;
+            }
+
+            return annotationCount == renderer.annotationCount
+                    && Objects.equals(annotationSignature, renderer.annotationSignature);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(annotationCount, annotationSignature);
+        }
+    }
+
+    private record HighlighterWithAnnotations(
+            RangeHighlighter highlighter, List<Annotation> annotation, VirtualFile file) {}
 }
