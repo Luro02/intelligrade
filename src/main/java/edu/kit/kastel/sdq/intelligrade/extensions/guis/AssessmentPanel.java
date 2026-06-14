@@ -25,8 +25,10 @@ import javax.swing.ScrollPaneConstants;
 import javax.swing.plaf.LayerUI;
 
 import com.intellij.DynamicBundle;
+import com.intellij.ide.HelpTooltipKt;
 import com.intellij.openapi.roots.ui.componentsList.components.ScrollablePanel;
 import com.intellij.openapi.ui.SimpleToolWindowPanel;
+import com.intellij.openapi.util.text.HtmlChunk;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.ScrollPaneFactory;
 import com.intellij.ui.TitledSeparator;
@@ -113,7 +115,7 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
 
             // no tooltip for custom comment
             if (!mistakeType.isCustomAnnotation()) {
-                button.setToolTipText(mistakeType.getMessage().translateTo(LOCALE));
+                HelpTooltipKt.setToolTipText(button, HtmlChunk.text(mistakeType.getMessage().translateTo(LOCALE)));
             }
             button.setMargin(JBUI.emptyInsets());
 
@@ -235,7 +237,7 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
 
                 // annotate the amount of points subtracted by this button
                 pointsSubtractedByButton.ifPresentOrElse(
-                        points -> iconText.append(" | ").append(points.score()).append("P"),
+                        points -> iconText.append(" | ").append("%.2f".formatted(points.score())).append("P"),
                         () -> iconText.append(" | 0P"));
 
             } else {
