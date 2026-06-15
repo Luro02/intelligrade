@@ -22,14 +22,14 @@ import net.miginfocom.swing.MigLayout;
 /**
  * A layout manager that flexibly adjusts the number of columns to fit the available width of the container.
  * <br>
- * It will try to fit as many components in a row as possible, while ensuring that components are close to their
- * preferred size. If the components become too large, it will try to fit more components in the row to balance
- * the sizes.
+ * It tries to fit as many components in a row as possible. Components may shrink down to their minimum width, or
+ * to the configured wrapped-component width, before the layout reduces the number of columns.
  */
 public class FlowWrapLayout implements LayoutManager2 {
     private static final Logger LOG = Logger.getInstance(FlowWrapLayout.class);
     private final List<FixedLayout> layouts;
     private final SharedSizeGroups sharedSizeGroups;
+    private final int minimumWrappedComponentWidth;
     private final boolean isDebug;
 
     public FlowWrapLayout(int maxColumns) {
@@ -41,20 +41,33 @@ public class FlowWrapLayout implements LayoutManager2 {
     }
 
     public FlowWrapLayout(int maxColumns, String layoutConstraints, SharedSizeGroups sharedSizeGroups) {
-        this(maxColumns, layoutConstraints, sharedSizeGroups, false);
+        this(maxColumns, layoutConstraints, sharedSizeGroups, Integer.MAX_VALUE, false);
+    }
+
+    public FlowWrapLayout(
+            int maxColumns,
+            String layoutConstraints,
+            SharedSizeGroups sharedSizeGroups,
+            int minimumWrappedComponentWidth) {
+        this(maxColumns, layoutConstraints, sharedSizeGroups, minimumWrappedComponentWidth, false);
     }
 
     private FlowWrapLayout(int maxColumns, String layoutConstraints, boolean isDebug) {
-        this(maxColumns, layoutConstraints, null, isDebug);
+        this(maxColumns, layoutConstraints, null, Integer.MAX_VALUE, isDebug);
     }
 
     private FlowWrapLayout(
-            int maxColumns, String layoutConstraints, SharedSizeGroups sharedSizeGroups, boolean isDebug) {
+            int maxColumns,
+            String layoutConstraints,
+            SharedSizeGroups sharedSizeGroups,
+            int minimumWrappedComponentWidth,
+            boolean isDebug) {
         this(
                 IntStream.rangeClosed(1, maxColumns)
                         .mapToObj(i -> new MigConstraint(i, layoutConstraints, "", ""))
                         .toList(),
                 sharedSizeGroups,
+                minimumWrappedComponentWidth,
                 isDebug);
     }
 
@@ -70,13 +83,31 @@ public class FlowWrapLayout implements LayoutManager2 {
         this(layouts, sharedSizeGroups, false);
     }
 
+    public FlowWrapLayout(
+            Collection<MigConstraint> layouts, SharedSizeGroups sharedSizeGroups, int minimumWrappedComponentWidth) {
+        this(layouts, sharedSizeGroups, minimumWrappedComponentWidth, false);
+    }
+
     public FlowWrapLayout(Collection<MigConstraint> layouts, SharedSizeGroups sharedSizeGroups, boolean isDebug) {
+        this(layouts, sharedSizeGroups, Integer.MAX_VALUE, isDebug);
+    }
+
+    private FlowWrapLayout(
+            Collection<MigConstraint> layouts,
+            SharedSizeGroups sharedSizeGroups,
+            int minimumWrappedComponentWidth,
+            boolean isDebug) {
         if (layouts.isEmpty()) {
             throw new IllegalArgumentException("Layouts list cannot be empty");
         }
 
+        if (minimumWrappedComponentWidth <= 0) {
+            throw new IllegalArgumentException("minimum wrapped component width must be greater than 0");
+        }
+
         this.isDebug = isDebug;
         this.sharedSizeGroups = sharedSizeGroups;
+        this.minimumWrappedComponentWidth = minimumWrappedComponentWidth;
         this.layouts = new ArrayList<>(layouts.size());
 
         for (MigConstraint constraint : layouts) {
@@ -87,7 +118,7 @@ public class FlowWrapLayout implements LayoutManager2 {
 
             var columnConstraints = constraint.columnConstraints();
             if (columnConstraints.isBlank()) {
-                columnConstraints = "[grow]".repeat(constraint.columns());
+                columnConstraints = "[0::,grow]".repeat(constraint.columns());
             }
 
             this.layouts.add(new FixedLayout(
@@ -113,7 +144,7 @@ public class FlowWrapLayout implements LayoutManager2 {
         // For example `growx` or `spanx 2`.
         registerSharedSizeGroup(comp, name);
         for (var fixedLayout : layouts) {
-            fixedLayout.layout().addLayoutComponent(name, comp);
+            fixedLayout.layout().addLayoutComponent(withShrinkableWidth(name), comp);
         }
     }
 
@@ -121,7 +152,7 @@ public class FlowWrapLayout implements LayoutManager2 {
     public void addLayoutComponent(Component comp, Object constraints) {
         registerSharedSizeGroup(comp, constraints);
         for (var layout : layouts) {
-            layout.layout().addLayoutComponent(comp, constraints);
+            layout.layout().addLayoutComponent(comp, withShrinkableWidth(constraints));
         }
     }
 
@@ -206,9 +237,19 @@ public class FlowWrapLayout implements LayoutManager2 {
         return this.findClosestLayout(targetLayout).layout();
     }
 
-    public record VirtualLayout(List<VirtualRow> rows, int columns) {
+    public record VirtualLayout(List<VirtualRow> rows, int columns, int minimumWrappedComponentWidth) {
         public VirtualLayout(int columns) {
-            this(new ArrayList<>(), columns);
+            this(columns, Integer.MAX_VALUE);
+        }
+
+        public VirtualLayout(int columns, int minimumWrappedComponentWidth) {
+            this(new ArrayList<>(), columns, minimumWrappedComponentWidth);
+        }
+
+        public VirtualLayout {
+            if (minimumWrappedComponentWidth <= 0) {
+                throw new IllegalArgumentException("minimum wrapped component width must be greater than 0");
+            }
         }
 
         private VirtualRow currentRow() {
@@ -224,7 +265,7 @@ public class FlowWrapLayout implements LayoutManager2 {
                 this.rows.add(new VirtualRow());
             }
 
-            this.currentRow().add(component);
+            this.currentRow().add(component, this.minimumWrappedComponentWidth);
         }
 
         public boolean fitsWithin(int maxWidth) {
@@ -265,12 +306,20 @@ public class FlowWrapLayout implements LayoutManager2 {
                 this.componentCount = 0;
             }
 
-            private void add(Component component) {
+            private void add(Component component, int minimumWrappedComponentWidth) {
                 this.preferredWidth += component.getPreferredSize().width;
-                this.minWidth += component.getMinimumSize().width;
+                this.minWidth += effectiveMinimumWidth(component, minimumWrappedComponentWidth);
                 this.componentCount += 1;
             }
         }
+    }
+
+    private static int effectiveMinimumWidth(Component component, int minimumWrappedComponentWidth) {
+        if (minimumWrappedComponentWidth == Integer.MAX_VALUE) {
+            return component.getMinimumSize().width;
+        }
+
+        return minimumWrappedComponentWidth;
     }
 
     private int getTargetLayout(Component[] components, int maxWidth) {
@@ -288,31 +337,32 @@ public class FlowWrapLayout implements LayoutManager2 {
 
         // Choosing the best layout is a bit more involved, because there are many variables to consider.
         //
-        // Each component has a minimum size and a preferred size.
+        // Each component has a minimum size and a preferred size. Some components, like wrapping text buttons,
+        // also have a configured wrapped-component width that represents the smallest useful column width.
         //
         // The best layout...
         // - should have the most columns possible
-        // - where the number of components at their preferred size is maximized
+        // - should allow components to shrink or wrap before reducing the number of columns
         // - while no row exceeds the maximum width of the container
         //
         // Without maximizing the number of columns, it would always choose a single column layout,
         // because that would maximize the number of components at their preferred size.
-
+        //
         // This has O(len(layouts) * len(components)) complexity
+        int availableComponents = Math.max(1, components.length);
         int targetLayout = this.layouts.stream()
-                .map(FixedLayout::columns)
+                .filter(layout -> layout.columns() <= availableComponents)
                 .map(targetColumnNumber -> {
-                    var layout = new VirtualLayout(targetColumnNumber);
+                    var layout = new VirtualLayout(targetColumnNumber.columns(), this.minimumWrappedComponentWidth);
                     for (var component : components) {
                         layout.add(component);
                     }
 
                     return layout;
-                }) // Rows that overflow the max width can not be used
+                })
                 .filter(layout -> layout.fitsWithin(maxWidth))
-                .sorted(VirtualLayout.comparator(maxWidth).reversed())
-                .map(VirtualLayout::maxComponentInRow)
-                .findFirst()
+                .max(Comparator.comparing(VirtualLayout::columns))
+                .map(VirtualLayout::columns)
                 .orElse(1);
 
         if (this.isDebug) {
@@ -385,6 +435,28 @@ public class FlowWrapLayout implements LayoutManager2 {
         if (this.sharedSizeGroups != null) {
             this.sharedSizeGroups.apply();
         }
+    }
+
+    private static Object withShrinkableWidth(Object constraints) {
+        if (!(constraints instanceof String constraintText)) {
+            return constraints;
+        }
+
+        return withShrinkableWidth(constraintText);
+    }
+
+    private static String withShrinkableWidth(String constraints) {
+        if (constraints == null || constraints.isBlank()) {
+            return "wmin 0";
+        }
+
+        if (Arrays.stream(constraints.split(","))
+                .map(String::trim)
+                .anyMatch(segment -> segment.startsWith("wmin ") || segment.startsWith("width "))) {
+            return constraints;
+        }
+
+        return constraints + ", wmin 0";
     }
 
     private static String extractSizeGroupKey(Object constraints) {

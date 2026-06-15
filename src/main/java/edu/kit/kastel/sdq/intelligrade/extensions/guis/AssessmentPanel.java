@@ -56,6 +56,7 @@ import net.miginfocom.swing.MigLayout;
 
 public class AssessmentPanel extends SimpleToolWindowPanel {
     private static final Locale LOCALE = DynamicBundle.getLocale();
+    private static final int MINIMUM_WRAPPED_ASSESSMENT_BUTTON_WIDTH = 190;
 
     private final JPanel content;
     private final JBLabel pointsLabel;
@@ -115,7 +116,8 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
         this.ratingGroupBorders.put(ratingGroup, separator);
         this.content.add(separator, "growx");
 
-        var panel = new JBPanel<>(new FlowWrapLayout(5, "fill, gap 0", assessmentButtonSizeGroups));
+        var panel = new JBPanel<>(new FlowWrapLayout(
+                5, "fill, gap 0", assessmentButtonSizeGroups, JBUI.scale(MINIMUM_WRAPPED_ASSESSMENT_BUTTON_WIDTH)));
         for (var mistakeType : mistakeTypes) {
             var button = ExercisePanel.createWrappingButton(
                     mistakeType.getButtonText().translateTo(LOCALE));
