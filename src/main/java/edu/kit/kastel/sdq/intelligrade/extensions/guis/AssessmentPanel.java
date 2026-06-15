@@ -59,6 +59,7 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
 
     private final JPanel content;
     private final JBLabel pointsLabel;
+    private final FlowWrapLayout.SharedSizeGroups assessmentButtonSizeGroups = new FlowWrapLayout.SharedSizeGroups();
     private final Map<RatingGroup, TitledSeparator> ratingGroupBorders = new IdentityHashMap<>();
     private final List<AssessmentButton> assessmentButtons = new ArrayList<>();
 
@@ -114,7 +115,7 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
         this.ratingGroupBorders.put(ratingGroup, separator);
         this.content.add(separator, "growx");
 
-        var panel = new JBPanel<>(new FlowWrapLayout(5, "fill, gap 0"));
+        var panel = new JBPanel<>(new FlowWrapLayout(5, "fill, gap 0", assessmentButtonSizeGroups));
         for (var mistakeType : mistakeTypes) {
             var button = ExercisePanel.createWrappingButton(
                     mistakeType.getButtonText().translateTo(LOCALE));
@@ -136,7 +137,7 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
             };
             JPanel buttonPanel = new JPanel(new MigLayout("fill, insets 0"));
             buttonPanel.add(button, "grow");
-            panel.add(new JLayer<>(buttonPanel, layer), "grow, sizegroup main");
+            panel.add(new JLayer<>(buttonPanel, layer), "grow, sizegroup mistakeButtons");
 
             button.addActionListener(a -> assessment.addAnnotationAtCaret(
                     mistakeType, (a.getModifiers() & ActionEvent.CTRL_MASK) == ActionEvent.CTRL_MASK));

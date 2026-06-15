@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2025. */
+/* Licensed under EPL-2.0 2025-2026. */
 package edu.kit.kastel.sdq.intelligrade.widgets;
 
 import java.awt.Component;
@@ -9,7 +9,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.WeakHashMap;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -26,6 +29,7 @@ import net.miginfocom.swing.MigLayout;
 public class FlowWrapLayout implements LayoutManager2 {
     private static final Logger LOG = Logger.getInstance(FlowWrapLayout.class);
     private final List<FixedLayout> layouts;
+    private final SharedSizeGroups sharedSizeGroups;
     private final boolean isDebug;
 
     public FlowWrapLayout(int maxColumns) {
@@ -36,11 +40,21 @@ public class FlowWrapLayout implements LayoutManager2 {
         this(maxColumns, layoutConstraints, false);
     }
 
+    public FlowWrapLayout(int maxColumns, String layoutConstraints, SharedSizeGroups sharedSizeGroups) {
+        this(maxColumns, layoutConstraints, sharedSizeGroups, false);
+    }
+
     private FlowWrapLayout(int maxColumns, String layoutConstraints, boolean isDebug) {
+        this(maxColumns, layoutConstraints, null, isDebug);
+    }
+
+    private FlowWrapLayout(
+            int maxColumns, String layoutConstraints, SharedSizeGroups sharedSizeGroups, boolean isDebug) {
         this(
                 IntStream.rangeClosed(1, maxColumns)
                         .mapToObj(i -> new MigConstraint(i, layoutConstraints, "", ""))
                         .toList(),
+                sharedSizeGroups,
                 isDebug);
     }
 
@@ -49,11 +63,20 @@ public class FlowWrapLayout implements LayoutManager2 {
     }
 
     public FlowWrapLayout(Collection<MigConstraint> layouts, boolean isDebug) {
+        this(layouts, null, isDebug);
+    }
+
+    public FlowWrapLayout(Collection<MigConstraint> layouts, SharedSizeGroups sharedSizeGroups) {
+        this(layouts, sharedSizeGroups, false);
+    }
+
+    public FlowWrapLayout(Collection<MigConstraint> layouts, SharedSizeGroups sharedSizeGroups, boolean isDebug) {
         if (layouts.isEmpty()) {
             throw new IllegalArgumentException("Layouts list cannot be empty");
         }
 
         this.isDebug = isDebug;
+        this.sharedSizeGroups = sharedSizeGroups;
         this.layouts = new ArrayList<>(layouts.size());
 
         for (MigConstraint constraint : layouts) {
@@ -88,6 +111,7 @@ public class FlowWrapLayout implements LayoutManager2 {
     public void addLayoutComponent(String name, Component comp) {
         // This is called with the component and the arguments that were supplied to add().
         // For example `growx` or `spanx 2`.
+        registerSharedSizeGroup(comp, name);
         for (var fixedLayout : layouts) {
             fixedLayout.layout().addLayoutComponent(name, comp);
         }
@@ -95,6 +119,7 @@ public class FlowWrapLayout implements LayoutManager2 {
 
     @Override
     public void addLayoutComponent(Component comp, Object constraints) {
+        registerSharedSizeGroup(comp, constraints);
         for (var layout : layouts) {
             layout.layout().addLayoutComponent(comp, constraints);
         }
@@ -102,6 +127,10 @@ public class FlowWrapLayout implements LayoutManager2 {
 
     @Override
     public void removeLayoutComponent(Component comp) {
+        if (this.sharedSizeGroups != null) {
+            this.sharedSizeGroups.remove(comp);
+        }
+
         for (var fixedLayout : layouts) {
             fixedLayout.layout().removeLayoutComponent(comp);
         }
@@ -109,12 +138,14 @@ public class FlowWrapLayout implements LayoutManager2 {
 
     @Override
     public Dimension preferredLayoutSize(Container parent) {
+        applySharedSizeGroups();
         // The preferred size is the layout with the most columns
         return this.findClosestLayout(Integer.MAX_VALUE).layout().preferredLayoutSize(parent);
     }
 
     @Override
     public Dimension minimumLayoutSize(Container parent) {
+        applySharedSizeGroups();
         var minDim = this.currentLayout(parent).minimumLayoutSize(parent);
         var oneColumnDim = this.findClosestLayout(1).layout().minimumLayoutSize(parent);
         if (this.isDebug) {
@@ -139,6 +170,7 @@ public class FlowWrapLayout implements LayoutManager2 {
 
     @Override
     public Dimension maximumLayoutSize(Container target) {
+        applySharedSizeGroups();
         var maxDim = this.currentLayout(target).maximumLayoutSize(target);
         var maxColumnsDim = this.findClosestLayout(Integer.MAX_VALUE).layout().maximumLayoutSize(target);
 
@@ -156,6 +188,7 @@ public class FlowWrapLayout implements LayoutManager2 {
     }
 
     private MigLayout currentLayout(Container parent) {
+        applySharedSizeGroups();
         var insets = parent.getInsets();
         var maxWidth = parent.getWidth() - insets.left - insets.right;
         var components = parent.getComponents();
@@ -292,6 +325,7 @@ public class FlowWrapLayout implements LayoutManager2 {
 
     @Override
     public void layoutContainer(Container parent) {
+        applySharedSizeGroups();
         this.currentLayout(parent).layoutContainer(parent);
     }
 
@@ -333,6 +367,120 @@ public class FlowWrapLayout implements LayoutManager2 {
 
         public MigConstraint(int columns) {
             this(columns, "");
+        }
+    }
+
+    private void registerSharedSizeGroup(Component component, Object constraints) {
+        if (this.sharedSizeGroups == null) {
+            return;
+        }
+
+        String sizeGroupKey = extractSizeGroupKey(constraints);
+        if (sizeGroupKey != null) {
+            this.sharedSizeGroups.add(component, sizeGroupKey);
+        }
+    }
+
+    private void applySharedSizeGroups() {
+        if (this.sharedSizeGroups != null) {
+            this.sharedSizeGroups.apply();
+        }
+    }
+
+    private static String extractSizeGroupKey(Object constraints) {
+        if (!(constraints instanceof String constraintText)) {
+            return null;
+        }
+
+        for (String segment : constraintText.split(",")) {
+            String[] tokens = segment.trim().split("\\s+");
+            if (tokens.length >= 2 && "sizegroup".equals(tokens[0])) {
+                return tokens[1];
+            }
+        }
+
+        return null;
+    }
+
+    public static class SharedSizeGroups {
+        private final Map<Component, SharedSizeGroupEntry> components = new WeakHashMap<>();
+
+        private void add(Component component, String key) {
+            this.components.computeIfAbsent(component, ignored -> SharedSizeGroupEntry.create(component)).key = key;
+        }
+
+        private void remove(Component component) {
+            SharedSizeGroupEntry entry = this.components.remove(component);
+            if (entry != null) {
+                entry.restore(component);
+            }
+        }
+
+        private void apply() {
+            if (this.components.isEmpty()) {
+                return;
+            }
+
+            Map<String, Dimension> preferredSizes = new HashMap<>();
+            Map<String, Dimension> minimumSizes = new HashMap<>();
+            for (var entry : this.components.entrySet()) {
+                Component component = entry.getKey();
+                SharedSizeGroupEntry sizeGroupEntry = entry.getValue();
+
+                sizeGroupEntry.restore(component);
+                expand(preferredSizes, sizeGroupEntry.key, component.getPreferredSize());
+                expand(minimumSizes, sizeGroupEntry.key, component.getMinimumSize());
+            }
+
+            for (var entry : this.components.entrySet()) {
+                Component component = entry.getKey();
+                String key = entry.getValue().key;
+
+                component.setPreferredSize(preferredSizes.get(key));
+                component.setMinimumSize(minimumSizes.get(key));
+            }
+        }
+
+        private static void expand(Map<String, Dimension> dimensions, String key, Dimension candidate) {
+            dimensions.compute(key, (ignored, current) -> {
+                if (current == null) {
+                    return new Dimension(candidate);
+                }
+
+                current.width = Math.max(current.width, candidate.width);
+                current.height = Math.max(current.height, candidate.height);
+                return current;
+            });
+        }
+    }
+
+    private static class SharedSizeGroupEntry {
+        private final boolean hadPreferredSize;
+        private final Dimension preferredSize;
+        private final boolean hadMinimumSize;
+        private final Dimension minimumSize;
+
+        private String key;
+
+        private SharedSizeGroupEntry(
+                boolean hadPreferredSize, Dimension preferredSize, boolean hadMinimumSize, Dimension minimumSize) {
+            this.hadPreferredSize = hadPreferredSize;
+            this.preferredSize = preferredSize;
+            this.hadMinimumSize = hadMinimumSize;
+            this.minimumSize = minimumSize;
+        }
+
+        private static SharedSizeGroupEntry create(Component component) {
+            return new SharedSizeGroupEntry(
+                    component.isPreferredSizeSet(),
+                    component.isPreferredSizeSet() ? component.getPreferredSize() : null,
+                    component.isMinimumSizeSet(),
+                    component.isMinimumSizeSet() ? component.getMinimumSize() : null);
+        }
+
+        private void restore(Component component) {
+            component.setPreferredSize(this.hadPreferredSize ? new Dimension(this.preferredSize) : null);
+            component.setMinimumSize(this.hadMinimumSize ? new Dimension(this.minimumSize) : null);
         }
     }
 }
