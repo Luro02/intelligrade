@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2025. */
+/* Licensed under EPL-2.0 2025-2026. */
 package edu.kit.kastel.sdq.intelligrade.extensions.guis;
 
 import java.util.ArrayList;
@@ -55,7 +55,7 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
         this.setTitle("All Submissions");
         this.setModal(false);
         this.init();
-        PluginState.getInstance().registerExerciseSelectedListener(this::fetchSubmissions);
+        PluginState.getInstance().registerExerciseSelectedListener(this::fetchSubmissions, getDisposable());
     }
 
     @Override

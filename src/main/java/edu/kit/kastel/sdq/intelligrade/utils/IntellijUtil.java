@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.utils;
 
 import java.awt.Color;
@@ -83,7 +83,7 @@ public final class IntellijUtil {
 
     public static VirtualFile getAnnotationFile(Annotation annotation) {
         var path = getAnnotationPath(annotation);
-        var file = ReadAction.compute(() -> VfsUtil.findFile(path, true));
+        var file = ReadAction.computeBlocking(() -> VfsUtil.findFile(path, true));
         if (file == null) {
             throw new IllegalStateException("File not found: " + path);
         }

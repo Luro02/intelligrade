@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.extensions.guis;
 
 import java.awt.Color;
@@ -25,8 +25,11 @@ import javax.swing.ScrollPaneConstants;
 import javax.swing.plaf.LayerUI;
 
 import com.intellij.DynamicBundle;
+import com.intellij.ide.HelpTooltipKt;
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.roots.ui.componentsList.components.ScrollablePanel;
 import com.intellij.openapi.ui.SimpleToolWindowPanel;
+import com.intellij.openapi.util.text.HtmlChunk;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.ScrollPaneFactory;
 import com.intellij.ui.TitledSeparator;
@@ -53,13 +56,15 @@ import net.miginfocom.swing.MigLayout;
 
 public class AssessmentPanel extends SimpleToolWindowPanel {
     private static final Locale LOCALE = DynamicBundle.getLocale();
+    private static final int MINIMUM_WRAPPED_ASSESSMENT_BUTTON_WIDTH = 190;
 
     private final JPanel content;
     private final JBLabel pointsLabel;
+    private final FlowWrapLayout.SharedSizeGroups assessmentButtonSizeGroups = new FlowWrapLayout.SharedSizeGroups();
     private final Map<RatingGroup, TitledSeparator> ratingGroupBorders = new IdentityHashMap<>();
     private final List<AssessmentButton> assessmentButtons = new ArrayList<>();
 
-    public AssessmentPanel() {
+    public AssessmentPanel(Disposable parentDisposable) {
         super(true, true);
 
         content = new ScrollablePanel(new MigLayout("wrap 1", "[grow]"));
@@ -71,32 +76,37 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
         pointsLabel = new JBLabel();
 
         this.showNoActiveAssessment();
-        PluginState.getInstance().registerAssessmentStartedListener(assessment -> {
-            content.removeAll();
+        PluginState.getInstance()
+                .registerAssessmentStartedListener(
+                        assessment -> {
+                            content.removeAll();
 
-            content.add(pointsLabel, "alignx center");
+                            content.add(pointsLabel, "alignx center");
 
-            var infoLabel = TextBuilder.immutable("Hold ")
-                    .foreground(JBColor.GRAY)
-                    .addColoredText(
-                            KeyPress.of(KeyEvent.VK_CONTROL).toString(), JBUI.CurrentTheme.Link.Foreground.ENABLED)
-                    .addText(", while pressing a button, to add a custom message")
-                    .horizontalAlignment(TextBuilder.Alignment.CENTER)
-                    .text();
-            content.add(infoLabel, "alignx center");
+                            var infoLabel = TextBuilder.immutable("Hold ")
+                                    .foreground(JBColor.GRAY)
+                                    .addColoredText(
+                                            KeyPress.of(KeyEvent.VK_CONTROL).toString(),
+                                            JBUI.CurrentTheme.Link.Foreground.ENABLED)
+                                    .addText(", while pressing a button, to add a custom message")
+                                    .horizontalAlignment(TextBuilder.Alignment.CENTER)
+                                    .text();
+                            content.add(infoLabel, "alignx center");
 
-            assessment.registerAnnotationsUpdatedListener(annotations -> {
-                var a = assessment.getAssessment();
-                var testPoints = a.calculateTotalPointsOfTests();
-                var annotationPoints = a.calculateTotalPointsOfAnnotations();
-                var totalPoints = a.calculateTotalPoints();
-                var maxPoints = a.getMaxPoints();
-                pointsLabel.setText(getAssessmentPointsTitle(testPoints, annotationPoints, totalPoints, maxPoints));
-            });
+                            assessment.registerAnnotationsUpdatedListener(annotations -> {
+                                var a = assessment.getAssessment();
+                                var testPoints = a.calculateTotalPointsOfTests();
+                                var annotationPoints = a.calculateTotalPointsOfAnnotations();
+                                var totalPoints = a.calculateTotalPoints();
+                                var maxPoints = a.getMaxPoints();
+                                pointsLabel.setText(
+                                        getAssessmentPointsTitle(testPoints, annotationPoints, totalPoints, maxPoints));
+                            });
 
-            this.createMistakeButtons(assessment);
-        });
-        PluginState.getInstance().registerAssessmentClosedListener(this::showNoActiveAssessment);
+                            this.createMistakeButtons(assessment);
+                        },
+                        parentDisposable);
+        PluginState.getInstance().registerAssessmentClosedListener(this::showNoActiveAssessment, parentDisposable);
     }
 
     private Component addGroupPanel(
@@ -106,14 +116,16 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
         this.ratingGroupBorders.put(ratingGroup, separator);
         this.content.add(separator, "growx");
 
-        var panel = new JBPanel<>(new FlowWrapLayout(5, "fill, gap 0"));
+        var panel = new JBPanel<>(new FlowWrapLayout(
+                5, "fill, gap 0", assessmentButtonSizeGroups, JBUI.scale(MINIMUM_WRAPPED_ASSESSMENT_BUTTON_WIDTH)));
         for (var mistakeType : mistakeTypes) {
             var button = ExercisePanel.createWrappingButton(
                     mistakeType.getButtonText().translateTo(LOCALE));
 
             // no tooltip for custom comment
             if (!mistakeType.isCustomAnnotation()) {
-                button.setToolTipText(mistakeType.getMessage().translateTo(LOCALE));
+                HelpTooltipKt.setToolTipText(
+                        button, HtmlChunk.text(mistakeType.getMessage().translateTo(LOCALE)));
             }
             button.setMargin(JBUI.emptyInsets());
 
@@ -127,7 +139,7 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
             };
             JPanel buttonPanel = new JPanel(new MigLayout("fill, insets 0"));
             buttonPanel.add(button, "grow");
-            panel.add(new JLayer<>(buttonPanel, layer), "grow, sizegroup main");
+            panel.add(new JLayer<>(buttonPanel, layer), "grow, sizegroup mistakeButtons");
 
             button.addActionListener(a -> assessment.addAnnotationAtCaret(
                     mistakeType, (a.getModifiers() & ActionEvent.CTRL_MASK) == ActionEvent.CTRL_MASK));
@@ -235,7 +247,9 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
 
                 // annotate the amount of points subtracted by this button
                 pointsSubtractedByButton.ifPresentOrElse(
-                        points -> iconText.append(" | ").append(points.score()).append("P"),
+                        points -> iconText.append(" | ")
+                                .append("%.2f".formatted(points.score()))
+                                .append("P"),
                         () -> iconText.append(" | 0P"));
 
             } else {
@@ -272,8 +286,7 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
             double testPoints, double annotationPoints, double totalPoints, double maxPoints) {
         if (annotationPoints > 0.0) {
             return """
-                    <html> <h2><span style="color: %s">%.1f</span> <span style="color: %s">%.1f</span> = %.1f of %.1f</h2></html>"""
-                    .formatted(
+                    <html> <h2><span style="color: %s">%.1f</span> <span style="color: %s">%.1f</span> = %.1f of %.1f</h2></html>""".formatted(
                             IntellijUtil.colorToCSS(JBColor.GREEN),
                             testPoints,
                             IntellijUtil.colorToCSS(JBColor.GREEN),
@@ -282,8 +295,7 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
                             maxPoints);
         } else {
             return """
-                    <html> <h2><span style="color: %s">%.1f</span> <span style="color: %s">- %.1f</span> = %.1f of %.1f</h2></html>"""
-                    .formatted(
+                    <html> <h2><span style="color: %s">%.1f</span> <span style="color: %s">- %.1f</span> = %.1f of %.1f</h2></html>""".formatted(
                             IntellijUtil.colorToCSS(JBColor.GREEN),
                             testPoints,
                             IntellijUtil.colorToCSS(JBColor.RED),

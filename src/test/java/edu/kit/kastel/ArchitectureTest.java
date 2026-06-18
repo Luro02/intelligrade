@@ -1,16 +1,20 @@
-/* Licensed under EPL-2.0 2024. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.*;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 
+import com.intellij.openapi.Disposable;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.lang.ArchRule;
+import edu.kit.kastel.sdq.intelligrade.state.PluginState;
+import org.junit.jupiter.api.Test;
 
 @AnalyzeClasses(packages = "edu.kit.kastel.sdq.intelligrade")
 class ArchitectureTest {
@@ -31,4 +35,17 @@ class ArchitectureTest {
             .should()
             .haveRawParameterTypes(Optional.class)
             .because("Optional should be used as return type only.");
+
+    @Test
+    void pluginStateListenerRegistrationRequiresParentDisposable() {
+        for (var method : PluginState.class.getDeclaredMethods()) {
+            if (!method.getName().matches("register.*Listeners?")) {
+                continue;
+            }
+
+            assertTrue(
+                    List.of(method.getParameterTypes()).contains(Disposable.class),
+                    () -> "Listener registration method must accept a parent Disposable: " + method);
+        }
+    }
 }

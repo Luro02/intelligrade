@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.listeners;
 
 import com.intellij.openapi.application.ApplicationManager;
@@ -17,14 +17,18 @@ public class OnStartupCompleted implements ProjectActivity, DumbAware {
     @Nullable
     @Override
     public Object execute(@NonNull Project project, @NonNull Continuation<? super Unit> continuation) {
-        HighlighterManager.initialize();
+        var highlighterManager = HighlighterManager.initialize(project);
 
-        project.getMessageBus().connect().subscribe(DumbService.DUMB_MODE, FileOpener.getInstance());
+        project.getMessageBus().connect(highlighterManager).subscribe(DumbService.DUMB_MODE, FileOpener.getInstance());
 
         // Open the Artemis tool window
-        ApplicationManager.getApplication().invokeLater(() -> ToolWindowManager.getInstance(project)
-                .getToolWindow("Artemis")
-                .show());
+        ApplicationManager.getApplication().invokeLater(() -> {
+            var toolWindow = ToolWindowManager.getInstance(project).getToolWindow("Artemis");
+
+            if (toolWindow != null) {
+                toolWindow.show();
+            }
+        });
 
         return null;
     }

@@ -1,7 +1,8 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.extensions.tool_windows;
 
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.util.Disposer;
 import com.intellij.openapi.wm.ToolWindow;
 import com.intellij.openapi.wm.ToolWindowFactory;
 import com.intellij.ui.content.ContentFactory;
@@ -15,7 +16,9 @@ public class AnnotationsToolWindowFactory implements ToolWindowFactory {
 
     @Override
     public void createToolWindowContent(@NonNull Project project, @NonNull ToolWindow toolWindow) {
-        var content = ContentFactory.getInstance().createContent(new AnnotationsListPanel(), null, false);
+        var disposable = Disposer.newDisposable("IntelliGrade Annotations Panel");
+        var content = ContentFactory.getInstance().createContent(new AnnotationsListPanel(disposable), null, false);
+        content.setDisposer(disposable);
         toolWindow.show();
         toolWindow.getContentManager().addContent(content);
     }

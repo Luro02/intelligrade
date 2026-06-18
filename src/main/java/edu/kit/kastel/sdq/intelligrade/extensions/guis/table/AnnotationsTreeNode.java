@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.extensions.guis.table;
 
 import java.util.ArrayList;
@@ -37,7 +37,7 @@ public abstract class AnnotationsTreeNode extends DefaultMutableTreeNode {
 
     private static final ColumnInfo[] COLUMN_INFOS = {
         new DefaultColumnInfo("Mistake type", String.class),
-        new DefaultColumnInfo("Line(s)", Lines.class),
+        new DefaultColumnInfo("Line(s)", Locations.class),
         new DefaultColumnInfo("File", FilePaths.class),
         new DefaultColumnInfo("Source", AnnotationSource.class),
         new DefaultColumnInfo("Custom Message", String.class),
@@ -118,18 +118,14 @@ public abstract class AnnotationsTreeNode extends DefaultMutableTreeNode {
         }
 
         return switch (column) {
-            case MISTAKE_TYPE_COLUMN -> annotation
-                    .getMistakeType()
-                    .getButtonText()
-                    .translateTo(LOCALE);
-            case LINES_COLUMN -> Lines.fromAnnotation(annotation);
+            case MISTAKE_TYPE_COLUMN ->
+                annotation.getMistakeType().getButtonText().translateTo(LOCALE);
+            case LINES_COLUMN -> Locations.fromAnnotation(annotation);
             case FILE_COLUMN -> new FilePaths(List.of(annotation.getFilePath()));
             case SOURCE_COLUMN -> annotation.getSource();
             case CUSTOM_MESSAGE_COLUMN -> annotation.getCustomMessage().orElse("");
-            case CUSTOM_PENALTY_COLUMN -> annotation
-                    .getCustomScore()
-                    .map(String::valueOf)
-                    .orElse("");
+            case CUSTOM_PENALTY_COLUMN ->
+                annotation.getCustomScore().map(String::valueOf).orElse("");
             default -> throw new IllegalStateException("No table data at column %d".formatted(column));
         };
     }
@@ -283,8 +279,9 @@ public abstract class AnnotationsTreeNode extends DefaultMutableTreeNode {
 
             if (columnClass(column) == String.class) {
                 return data.stream().map(String.class::cast).collect(Collectors.joining(", "));
-            } else if (columnClass(column) == Lines.class) {
-                return Lines.fromLines(data.stream().map(Lines.class::cast).toList());
+            } else if (columnClass(column) == Locations.class) {
+                return Locations.fromLocations(
+                        data.stream().map(Locations.class::cast).toList());
             } else if (columnClass(column) == FilePaths.class) {
                 return new FilePaths(data.stream()
                         .map(FilePaths.class::cast)
