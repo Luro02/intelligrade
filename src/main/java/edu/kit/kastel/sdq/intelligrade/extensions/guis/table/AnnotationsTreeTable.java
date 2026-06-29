@@ -31,7 +31,8 @@ import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
-import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.openapi.project.Project;
+import com.intellij.openapi.vfs.VfsUtil;
 import com.intellij.ui.DoubleClickListener;
 import com.intellij.ui.treeStructure.treetable.TreeTable;
 import com.intellij.ui.treeStructure.treetable.TreeTableCellRenderer;
@@ -44,7 +45,7 @@ import org.jspecify.annotations.NonNull;
 public class AnnotationsTreeTable extends TreeTable {
     private static final Logger LOG = Logger.getInstance(AnnotationsTreeTable.class);
     public static final Comparator<AnnotationsTreeNode> DEFAULT_NODE_COMPARATOR = delegatingColumnComparator(
-                    AnnotationsTreeNode.FILE_COLUMN)
+            AnnotationsTreeNode.FILE_COLUMN)
             .thenComparing(delegatingColumnComparator(AnnotationsTreeNode.LINES_COLUMN));
 
     private final AnnotationsTableModel model;
@@ -186,15 +187,13 @@ public class AnnotationsTreeTable extends TreeTable {
                     editCustomMessageOfSelection();
                 } else {
                     // Jump to the line in the editor
-                    var file = IntellijUtil.getAnnotationFile(annotation);
-                    var offset = getAnnotationOffset(file, annotation);
-                    if (offset.isEmpty()) {
+                    var project = IntellijUtil.getActiveProject();
+                    var descriptor = createAnnotationDescriptor(project, annotation);
+                    if (descriptor.isEmpty()) {
                         return true;
                     }
 
-                    FileEditorManager.getInstance(IntellijUtil.getActiveProject())
-                            .openTextEditor(
-                                    new OpenFileDescriptor(IntellijUtil.getActiveProject(), file, offset.get()), true);
+                    FileEditorManager.getInstance(project).openTextEditor(descriptor.get(), true);
                 }
 
                 return true;
@@ -202,8 +201,14 @@ public class AnnotationsTreeTable extends TreeTable {
         }.installOn(this);
     }
 
-    private static Optional<Integer> getAnnotationOffset(VirtualFile file, Annotation annotation) {
+    private static Optional<OpenFileDescriptor> createAnnotationDescriptor(Project project, Annotation annotation) {
         return ReadAction.computeBlocking(() -> {
+            var path = IntellijUtil.getAnnotationPath(annotation);
+            var file = VfsUtil.findFile(path, true);
+            if (file == null) {
+                throw new IllegalStateException("File not found: " + path);
+            }
+
             Document document = FileDocumentManager.getInstance().getDocument(file);
             if (document == null
                     || annotation.getStartLine() < 0
@@ -212,7 +217,7 @@ public class AnnotationsTreeTable extends TreeTable {
                 return Optional.empty();
             }
 
-            return Optional.of(document.getLineStartOffset(annotation.getStartLine()));
+            return Optional.of(new OpenFileDescriptor(project, file, document.getLineStartOffset(annotation.getStartLine())));
         });
     }
 
