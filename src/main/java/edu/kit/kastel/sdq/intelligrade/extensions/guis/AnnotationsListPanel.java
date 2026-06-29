@@ -16,6 +16,8 @@ import com.intellij.openapi.Disposable;
 import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
+import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.SimpleToolWindowPanel;
 import com.intellij.openapi.ui.popup.JBPopupFactory;
 import com.intellij.openapi.wm.ToolWindowManager;
@@ -25,8 +27,10 @@ import com.intellij.ui.ScrollPaneFactory;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBPanel;
 import com.intellij.ui.components.JBTextField;
+import edu.kit.kastel.sdq.artemis4j.ArtemisNetworkException;
 import edu.kit.kastel.sdq.artemis4j.grading.Annotation;
-import edu.kit.kastel.sdq.artemis4j.grading.User;
+import edu.kit.kastel.sdq.artemis4j.grading.ArtemisConnectionHolder;
+import edu.kit.kastel.sdq.artemis4j.grading.UserIdentifier;
 import edu.kit.kastel.sdq.intelligrade.extensions.guis.table.AnnotationsTableModel;
 import edu.kit.kastel.sdq.intelligrade.extensions.guis.table.AnnotationsTreeTable;
 import edu.kit.kastel.sdq.intelligrade.state.PluginState;
@@ -169,15 +173,29 @@ public class AnnotationsListPanel extends SimpleToolWindowPanel {
         PopupHandler.installPopupMenu(table, group, "popup@AnnotationsListPanel");
     }
 
-    private String mapAssessorId(Long id) {
+    private String mapAssessor(UserIdentifier id) {
         return Optional.ofNullable(id)
-                .map(aLong -> "%s (%d)"
-                        .formatted(
-                                PluginState.getInstance()
-                                        .resolveAssessorId(aLong)
-                                        .map(User::getLogin)
-                                        .orElse("?"),
-                                aLong))
+                .map(uid -> {
+                    try {
+                        var connection = PluginState.getInstance()
+                                .getActiveExercise()
+                                .map(ArtemisConnectionHolder::getConnection)
+                                .orElse(null);
+
+                        if (connection == null) {
+                            return null;
+                        }
+
+                        return connection
+                                .findUserByUserIdentifier(uid)
+                                .map(value -> "%s (%d)".formatted(value.getLogin(), value.getId()))
+                                .orElse(null);
+
+                    } catch (ArtemisNetworkException exception) {
+                        LOG.warn("failed to fetch user for id %s".formatted(id), exception);
+                        return null;
+                    }
+                })
                 .orElse("?");
     }
 
@@ -196,11 +214,10 @@ public class AnnotationsListPanel extends SimpleToolWindowPanel {
                 Map.entry("Path", location.filePath()),
                 Map.entry("Start", location.start().toString()),
                 Map.entry("End", location.end().toString()),
-                Map.entry("Created By", mapAssessorId(annotation.getCreatorId().orElse(null))),
+                Map.entry("Created By", mapAssessor(annotation.getCreator().orElse(null))),
                 Map.entry("Suppressed", annotation.isSuppressed() ? "Yes" : "No"),
                 Map.entry(
-                        "Suppressed By",
-                        mapAssessorId(annotation.getSuppressorId().orElse(null))),
+                        "Suppressed By", mapAssessor(annotation.getSuppressor().orElse(null))),
                 Map.entry("Classifiers", annotation.getClassifiers().toString()));
 
         for (var entry : data) {

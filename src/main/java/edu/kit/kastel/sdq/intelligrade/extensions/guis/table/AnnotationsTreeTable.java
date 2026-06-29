@@ -45,7 +45,7 @@ import org.jspecify.annotations.NonNull;
 public class AnnotationsTreeTable extends TreeTable {
     private static final Logger LOG = Logger.getInstance(AnnotationsTreeTable.class);
     public static final Comparator<AnnotationsTreeNode> DEFAULT_NODE_COMPARATOR = delegatingColumnComparator(
-            AnnotationsTreeNode.FILE_COLUMN)
+                    AnnotationsTreeNode.FILE_COLUMN)
             .thenComparing(delegatingColumnComparator(AnnotationsTreeNode.LINES_COLUMN));
 
     private final AnnotationsTableModel model;
@@ -217,7 +217,8 @@ public class AnnotationsTreeTable extends TreeTable {
                 return Optional.empty();
             }
 
-            return Optional.of(new OpenFileDescriptor(project, file, document.getLineStartOffset(annotation.getStartLine())));
+            return Optional.of(
+                    new OpenFileDescriptor(project, file, document.getLineStartOffset(annotation.getStartLine())));
         });
     }
 
