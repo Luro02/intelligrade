@@ -68,6 +68,10 @@ dependencies {
 }
 
 tasks {
+    intellijPlatform {
+        buildSearchableOptions = false
+    }
+
     patchPluginXml {
         changeNotes = """"""
     }
@@ -85,10 +89,6 @@ tasks {
 
     runIde {
         autoReload = true
-    }
-
-    buildSearchableOptions {
-        enabled = false
     }
 }
 
