@@ -82,7 +82,7 @@ class StartAssessmentService(
 
             val activeAssessment =
                 reporter.sizedStep(80, "Cloning...") {
-                    AssessmentTracker.initializeAssessment(nextAssessment.get())
+                    project.service<AssessmentTracker>().initializeAssessment(nextAssessment.get())
                 }
 
             if (activeAssessment == null) {

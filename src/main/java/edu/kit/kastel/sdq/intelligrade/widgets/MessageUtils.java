@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2025. */
+/* Licensed under EPL-2.0 2025-2026. */
 package edu.kit.kastel.sdq.intelligrade.widgets;
 
 import java.awt.BorderLayout;
@@ -10,7 +10,6 @@ import com.intellij.CommonBundle;
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.messages.MessageDialog;
-import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtil;
 
 public final class MessageUtils {
     private MessageUtils() {}
@@ -21,9 +20,9 @@ public final class MessageUtils {
      * @param title the title of the popup window
      * @param content the content to show inside the warning dialog
      */
-    public static void showWarning(String title, JComponent content) {
+    public static void showWarning(Project project, String title, JComponent content) {
         // FIXME: IntelliJ is not happy when a Project is used as parent for a window
-        var dialog = new WarningDialog(IntellijUtil.getActiveProject(), title, content);
+        var dialog = new WarningDialog(project, title, content);
         dialog.setModal(false);
 
         dialog.show();

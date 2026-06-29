@@ -27,6 +27,7 @@ import javax.swing.plaf.LayerUI;
 import com.intellij.DynamicBundle;
 import com.intellij.ide.HelpTooltipKt;
 import com.intellij.openapi.Disposable;
+import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.ui.componentsList.components.ScrollablePanel;
 import com.intellij.openapi.ui.SimpleToolWindowPanel;
 import com.intellij.openapi.util.text.HtmlChunk;
@@ -47,8 +48,7 @@ import edu.kit.kastel.sdq.artemis4j.grading.penalty.ThresholdPenaltyRule;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ThemeColor;
 import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment;
-import edu.kit.kastel.sdq.intelligrade.state.PluginState;
-import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtil;
+import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import edu.kit.kastel.sdq.intelligrade.utils.KeyPress;
 import edu.kit.kastel.sdq.intelligrade.widgets.FlowWrapLayout;
 import edu.kit.kastel.sdq.intelligrade.widgets.TextBuilder;
@@ -64,9 +64,10 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
     private final Map<RatingGroup, TitledSeparator> ratingGroupBorders = new IdentityHashMap<>();
     private final List<AssessmentButton> assessmentButtons = new ArrayList<>();
 
-    public AssessmentPanel(Disposable parentDisposable) {
+    public AssessmentPanel(Disposable parentDisposable, Project project) {
         super(true, true);
 
+        ProjectState projectState = ProjectState.getInstance(project);
         content = new ScrollablePanel(new MigLayout("wrap 1", "[grow]"));
         setContent(ScrollPaneFactory.createScrollPane(
                 content,
@@ -76,37 +77,36 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
         pointsLabel = new JBLabel();
 
         this.showNoActiveAssessment();
-        PluginState.getInstance()
-                .registerAssessmentStartedListener(
-                        assessment -> {
-                            content.removeAll();
+        projectState.registerAssessmentStartedListener(
+                assessment -> {
+                    content.removeAll();
 
-                            content.add(pointsLabel, "alignx center");
+                    content.add(pointsLabel, "alignx center");
 
-                            var infoLabel = TextBuilder.immutable("Hold ")
-                                    .foreground(JBColor.GRAY)
-                                    .addColoredText(
-                                            KeyPress.of(KeyEvent.VK_CONTROL).toString(),
-                                            JBUI.CurrentTheme.Link.Foreground.ENABLED)
-                                    .addText(", while pressing a button, to add a custom message")
-                                    .horizontalAlignment(TextBuilder.Alignment.CENTER)
-                                    .text();
-                            content.add(infoLabel, "alignx center");
+                    var infoLabel = TextBuilder.immutable("Hold ")
+                            .foreground(JBColor.GRAY)
+                            .addColoredText(
+                                    KeyPress.of(KeyEvent.VK_CONTROL).toString(),
+                                    JBUI.CurrentTheme.Link.Foreground.ENABLED)
+                            .addText(", while pressing a button, to add a custom message")
+                            .horizontalAlignment(TextBuilder.Alignment.CENTER)
+                            .text();
+                    content.add(infoLabel, "alignx center");
 
-                            assessment.registerAnnotationsUpdatedListener(annotations -> {
-                                var a = assessment.getAssessment();
-                                var testPoints = a.calculateTotalPointsOfTests();
-                                var annotationPoints = a.calculateTotalPointsOfAnnotations();
-                                var totalPoints = a.calculateTotalPoints();
-                                var maxPoints = a.getMaxPoints();
-                                pointsLabel.setText(
-                                        getAssessmentPointsTitle(testPoints, annotationPoints, totalPoints, maxPoints));
-                            });
+                    assessment.registerAnnotationsUpdatedListener(annotations -> {
+                        var a = assessment.getAssessment();
+                        var testPoints = a.calculateTotalPointsOfTests();
+                        var annotationPoints = a.calculateTotalPointsOfAnnotations();
+                        var totalPoints = a.calculateTotalPoints();
+                        var maxPoints = a.getMaxPoints();
+                        pointsLabel.setText(
+                                getAssessmentPointsTitle(testPoints, annotationPoints, totalPoints, maxPoints));
+                    });
 
-                            this.createMistakeButtons(assessment);
-                        },
-                        parentDisposable);
-        PluginState.getInstance().registerAssessmentClosedListener(this::showNoActiveAssessment, parentDisposable);
+                    this.createMistakeButtons(assessment);
+                },
+                parentDisposable);
+        projectState.registerAssessmentClosedListener(this::showNoActiveAssessment, parentDisposable);
     }
 
     private Component addGroupPanel(
@@ -287,18 +287,18 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
         if (annotationPoints > 0.0) {
             return """
                     <html> <h2><span style="color: %s">%.1f</span> <span style="color: %s">%.1f</span> = %.1f of %.1f</h2></html>""".formatted(
-                            IntellijUtil.colorToCSS(JBColor.GREEN),
+                            ProjectState.colorToCSS(JBColor.GREEN),
                             testPoints,
-                            IntellijUtil.colorToCSS(JBColor.GREEN),
+                            ProjectState.colorToCSS(JBColor.GREEN),
                             Math.abs(annotationPoints),
                             totalPoints,
                             maxPoints);
         } else {
             return """
                     <html> <h2><span style="color: %s">%.1f</span> <span style="color: %s">- %.1f</span> = %.1f of %.1f</h2></html>""".formatted(
-                            IntellijUtil.colorToCSS(JBColor.GREEN),
+                            ProjectState.colorToCSS(JBColor.GREEN),
                             testPoints,
-                            IntellijUtil.colorToCSS(JBColor.RED),
+                            ProjectState.colorToCSS(JBColor.RED),
                             Math.abs(annotationPoints),
                             totalPoints,
                             maxPoints);

@@ -9,7 +9,6 @@ import com.intellij.platform.util.progress.ProgressReporter
 import com.intellij.platform.util.progress.reportProgressScope
 import edu.kit.kastel.sdq.artemis4j.ArtemisNetworkException
 import edu.kit.kastel.sdq.artemis4j.grading.metajson.AnnotationMappingException
-import edu.kit.kastel.sdq.intelligrade.AssessmentTracker.cleanupAssessment
 import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,23 +57,31 @@ class EndAssessmentService(
         reporter: ProgressReporter,
         action: SubmitAction,
     ) {
+        val assessmentTracker = AssessmentTracker.getInstance(project)
+
         try {
             // Update the assessment state in artemis:
             reporter.sizedStep(50, "$action...") {
                 when (action) {
-                    SubmitAction.SUBMIT ->
+                    SubmitAction.SUBMIT -> {
                         withContext(Dispatchers.IO) {
-                            AssessmentTracker.activeAssessment?.assessment?.submit()
+                            assessmentTracker.activeAssessment?.assessment?.submit()
                         }
-                    SubmitAction.SAVE ->
+                    }
+
+                    SubmitAction.SAVE -> {
                         withContext(Dispatchers.IO) {
-                            AssessmentTracker.activeAssessment?.assessment?.save()
+                            assessmentTracker.activeAssessment?.assessment?.save()
                             ArtemisUtils.displayGenericInfoBalloon("Assessment saved", "The assessment has been saved.")
                         }
-                    SubmitAction.CANCEL ->
+                    }
+
+                    SubmitAction.CANCEL -> {
                         withContext(Dispatchers.IO) {
-                            AssessmentTracker.activeAssessment?.assessment?.cancel()
+                            assessmentTracker.activeAssessment?.assessment?.cancel()
                         }
+                    }
+
                     SubmitAction.CLOSE -> {
                         // Closing the assessment does not require any action on the server side,
                         // but we still want to clean up the local state.
@@ -85,7 +92,7 @@ class EndAssessmentService(
 
             // Cleanup the assessment
             reporter.sizedStep(50, "Cleaning...") {
-                cleanupAssessment()
+                assessmentTracker.cleanupAssessment()
             }
         } catch (e: ArtemisNetworkException) {
             LOG.warn(e)

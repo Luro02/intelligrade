@@ -19,6 +19,7 @@ import com.intellij.openapi.actionSystem.ActionGroup;
 import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.application.WriteAction;
@@ -45,11 +46,11 @@ import com.intellij.ui.AnActionButton;
 import com.intellij.util.concurrency.AppExecutorUtil;
 import edu.kit.kastel.sdq.artemis4j.grading.Annotation;
 import edu.kit.kastel.sdq.artemis4j.grading.penalty.MistakeType;
-import edu.kit.kastel.sdq.intelligrade.extensions.guis.AnnotationsListPanel;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
 import edu.kit.kastel.sdq.intelligrade.icons.ArtemisIcons;
 import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment;
-import edu.kit.kastel.sdq.intelligrade.state.PluginState;
+import edu.kit.kastel.sdq.intelligrade.state.AnnotationSelectionService;
+import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import org.jspecify.annotations.NonNull;
 
 /**
@@ -101,7 +102,7 @@ public final class HighlighterManager implements Disposable {
                     public void fileOpened(@NonNull FileEditorManager source, @NonNull VirtualFile file) {
                         var editor = source.getSelectedTextEditor();
 
-                        if (PluginState.getInstance().isAssessing() && editor != null) {
+                        if (ProjectState.getInstance(project).isAssessing() && editor != null) {
                             makeDocumentReadOnly(editor.getDocument());
                             updateHighlightersForEditor(editor);
                         }
@@ -113,14 +114,14 @@ public final class HighlighterManager implements Disposable {
                     }
                 });
 
-        PluginState.getInstance()
+        ProjectState.getInstance(project)
                 .registerAssessmentStartedListener(
                         assessment -> assessment.registerAnnotationsUpdatedListener(
                                 annotations -> updateHighlightersForAllEditors()),
                         this);
 
         // When an assessment is closed, clear everything
-        PluginState.getInstance()
+        ProjectState.getInstance(project)
                 .registerAssessmentClosedListener(
                         () -> {
                             clearAllHighlighters();
@@ -190,49 +191,26 @@ public final class HighlighterManager implements Disposable {
      * @param annotations the annotations to be highlighted
      */
     private void createHighlighter(Editor editor, List<Annotation> annotations) {
-        var file = getEditorFile(editor);
-        if (file.isEmpty()) {
-            return;
-        }
-
-        var document = editor.getDocument();
         if (annotations.isEmpty()) {
             return;
         }
 
-        var annotationColor = ArtemisSettingsState.getInstance().getAnnotationColor();
+        var highlighterRequests = ReadAction.compute(() -> createHighlighterRequests(editor, annotations));
+        if (highlighterRequests.isEmpty()) {
+            return;
+        }
 
         List<RangeHighlighter> highlighters = new ArrayList<>();
         List<Annotation> highlightedAnnotations = new ArrayList<>();
-        for (Annotation annotation : annotations) {
-            var offsetRange = getOffsetRange(document, annotation, file.get());
-            if (offsetRange.isEmpty()) {
-                continue;
-            }
-
-            // Lines that have NONE as highlight, should still be highlighted, but invisible to the user.
-            // This is necessary for the gutter icon.
-            var attributes = new TextAttributes(
-                    null, annotationColor.toJBColor(), null, EffectType.BOLD_LINE_UNDERSCORE, Font.PLAIN);
-
-            if (annotation.getMistakeType().getHighlight() == MistakeType.Highlight.NONE) {
-                attributes = new TextAttributes();
-            }
-
-            var range = HighlighterTargetArea.EXACT_RANGE;
-            if (offsetRange.get().isEmptyOrSingleCharacter()) {
-                // if the start and end offset are the same, we highlight the entire line
-                range = HighlighterTargetArea.LINES_IN_RANGE;
-            }
-
+        for (HighlighterRequest request : highlighterRequests) {
             highlighters.add(editor.getMarkupModel()
                     .addRangeHighlighter(
-                            offsetRange.get().startOffset(),
-                            offsetRange.get().endOffset(),
+                            request.offsetRange().startOffset(),
+                            request.offsetRange().endOffset(),
                             HighlighterLayer.SELECTION - 1,
-                            attributes,
-                            range));
-            highlightedAnnotations.add(annotation);
+                            request.attributes(),
+                            request.targetArea()));
+            highlightedAnnotations.add(request.annotation());
         }
 
         if (highlighters.isEmpty()) {
@@ -259,15 +237,50 @@ public final class HighlighterManager implements Disposable {
                 .collect(Collectors.joining("<br><br>"));
 
         highlighter.setGutterIconRenderer(new AnnotationGutterIconRenderer(
-                highlightedAnnotations, gutterTooltip, getGutterPopupActions(highlightedAnnotations)));
+                highlightedAnnotations, gutterTooltip, getGutterPopupActions(highlightedAnnotations, this.project)));
 
         highlightersPerEditor.computeIfAbsent(editor, e -> new ArrayList<>());
         for (int i = 0; i < highlighters.size(); i++) {
             highlightersPerEditor
                     .get(editor)
                     .add(new HighlighterWithAnnotations(
-                            highlighters.get(i), List.of(highlightedAnnotations.get(i)), file.get()));
+                            highlighters.get(i),
+                            List.of(highlightedAnnotations.get(i)),
+                            highlighterRequests.get(i).file()));
         }
+    }
+
+    private List<HighlighterRequest> createHighlighterRequests(Editor editor, List<Annotation> annotations) {
+        var file = getEditorFile(editor);
+        if (file.isEmpty()) {
+            return List.of();
+        }
+
+        var document = editor.getDocument();
+        var annotationColor = ArtemisSettingsState.getInstance().getAnnotationColor();
+        List<HighlighterRequest> requests = new ArrayList<>();
+        for (Annotation annotation : annotations) {
+            var offsetRange = getOffsetRange(document, annotation, file.get());
+            if (offsetRange.isEmpty()) {
+                continue;
+            }
+
+            // Lines that have NONE as highlight, should still be highlighted, but invisible to the user.
+            // This is necessary for the gutter icon.
+            var attributes = new TextAttributes(
+                    null, annotationColor.toJBColor(), null, EffectType.BOLD_LINE_UNDERSCORE, Font.PLAIN);
+
+            if (annotation.getMistakeType().getHighlight() == MistakeType.Highlight.NONE) {
+                attributes = new TextAttributes();
+            }
+
+            var range = offsetRange.get().isEmptyOrSingleCharacter()
+                    ? HighlighterTargetArea.LINES_IN_RANGE
+                    : HighlighterTargetArea.EXACT_RANGE;
+            requests.add(new HighlighterRequest(annotation, file.get(), offsetRange.get(), attributes, range));
+        }
+
+        return requests;
     }
 
     private void cancelLastPopup() {
@@ -282,7 +295,13 @@ public final class HighlighterManager implements Disposable {
     }
 
     private void updateHighlightersForAllEditors() {
-        if (!PluginState.getInstance().isAssessing()) {
+        if (!ApplicationManager.getApplication().isDispatchThread()) {
+            ApplicationManager.getApplication()
+                    .invokeLater(this::updateHighlightersForAllEditors, ModalityState.defaultModalityState());
+            return;
+        }
+
+        if (!ProjectState.getInstance(project).isAssessing()) {
             return;
         }
 
@@ -298,23 +317,21 @@ public final class HighlighterManager implements Disposable {
     }
 
     private void updateHighlightersForEditor(Editor editor) {
-        var file = getEditorFile(editor);
-        // E.g. decompiled classes are not in the local file system
-        // Since they are never part of an assessment, ignore them
-        if (file.isEmpty() || !file.get().isInLocalFileSystem()) {
+        var filePath = ReadAction.compute(() -> getLocalEditorFilePath(editor));
+        if (filePath.isEmpty()) {
             return;
         }
 
         clearHighlightersForEditor(editor);
 
-        var filePath = file.get().toNioPath();
-        var state = PluginState.getInstance();
+        var state = ProjectState.getInstance(project);
         ReadAction.nonBlocking(() -> {
                     var assessment = state.getActiveAssessment().orElseThrow().getAssessment();
                     return assessment
                             .streamAllAnnotations(false)
-                            .filter(a ->
-                                    getAnnotationPath(a).map(filePath::equals).orElse(false))
+                            .filter(a -> getAnnotationPath(a)
+                                    .map(filePath.get()::equals)
+                                    .orElse(false))
                             .collect(Collectors.groupingBy(Annotation::getStartLine));
                 })
                 .expireWhen(() -> editor.isDisposed() || project.isDisposed() || !state.isAssessing())
@@ -401,6 +418,17 @@ public final class HighlighterManager implements Disposable {
         return Optional.ofNullable(FileDocumentManager.getInstance().getFile(editor.getDocument()));
     }
 
+    private static Optional<Path> getLocalEditorFilePath(Editor editor) {
+        var file = getEditorFile(editor);
+        if (file.isEmpty() || !file.get().isInLocalFileSystem()) {
+            // E.g. decompiled classes are not in the local file system.
+            // Since they are never part of an assessment, ignore them.
+            return Optional.empty();
+        }
+
+        return Optional.of(file.get().toNioPath());
+    }
+
     private Optional<OffsetRange> getOffsetRange(Document document, Annotation annotation, VirtualFile file) {
         var location = annotation.getLocation();
         var startLine = location.start().line();
@@ -449,7 +477,7 @@ public final class HighlighterManager implements Disposable {
                 .resolve(annotation.getFilePath().replace("\\", "/")));
     }
 
-    private static ActionGroup getGutterPopupActions(List<Annotation> annotations) {
+    private static ActionGroup getGutterPopupActions(List<Annotation> annotations, Project project) {
         var group = new DefaultActionGroup();
         for (Annotation annotation : annotations) {
             String text = annotation.getMistakeType().getButtonText().translateTo(DynamicBundle.getLocale());
@@ -462,7 +490,7 @@ public final class HighlighterManager implements Disposable {
             group.addAction(new AnActionButton(text) {
                 @Override
                 public void actionPerformed(@NonNull AnActionEvent anActionEvent) {
-                    AnnotationsListPanel.getPanel().selectAnnotation(annotation);
+                    AnnotationSelectionService.getInstance(project).selectAnnotation(annotation);
                 }
 
                 @Override
@@ -488,6 +516,13 @@ public final class HighlighterManager implements Disposable {
             return startOffset == endOffset || startOffset + 1 == endOffset;
         }
     }
+
+    private record HighlighterRequest(
+            Annotation annotation,
+            VirtualFile file,
+            OffsetRange offsetRange,
+            TextAttributes attributes,
+            HighlighterTargetArea targetArea) {}
 
     private static final class AnnotationGutterIconRenderer extends GutterIconRenderer {
         private final int annotationCount;

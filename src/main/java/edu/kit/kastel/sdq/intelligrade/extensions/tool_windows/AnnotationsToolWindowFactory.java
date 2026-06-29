@@ -17,7 +17,8 @@ public class AnnotationsToolWindowFactory implements ToolWindowFactory {
     @Override
     public void createToolWindowContent(@NonNull Project project, @NonNull ToolWindow toolWindow) {
         var disposable = Disposer.newDisposable("IntelliGrade Annotations Panel");
-        var content = ContentFactory.getInstance().createContent(new AnnotationsListPanel(disposable), null, false);
+        var content =
+                ContentFactory.getInstance().createContent(new AnnotationsListPanel(disposable, project), null, false);
         content.setDisposer(disposable);
         toolWindow.show();
         toolWindow.getContentManager().addContent(content);

@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.extensions.guis;
 
 import java.awt.event.ActionEvent;
@@ -23,7 +23,7 @@ import com.intellij.ui.components.JBPanel;
 import com.intellij.ui.components.JBRadioButton;
 import edu.kit.kastel.sdq.artemis4j.grading.CorrectionRound;
 import edu.kit.kastel.sdq.artemis4j.grading.PackedAssessment;
-import edu.kit.kastel.sdq.intelligrade.state.PluginState;
+import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils;
 import edu.kit.kastel.sdq.intelligrade.widgets.FlowHideLayout;
 import edu.kit.kastel.sdq.intelligrade.widgets.FlowWrapLayout;
@@ -39,12 +39,14 @@ public class BacklogPanel extends JPanel {
     private final ButtonGroup buttonGroup;
     private final JTextComponent shownSubmissionsLabel;
     private final JPanel backlogList;
+    private final ProjectState projectState;
 
     private List<PackedAssessment> lastFetchedAssessments = new ArrayList<>();
     private final List<Runnable> onBacklogUpdate = new ArrayList<>();
 
-    public BacklogPanel() {
+    public BacklogPanel(ProjectState projectState) {
         super(new MigLayout("wrap 1", "[grow]"));
+        this.projectState = projectState;
 
         // The text search field is supposed to grow
         var filterPanel = new JBPanel<>(new FlowWrapLayout(List.of(
@@ -170,7 +172,7 @@ public class BacklogPanel extends JPanel {
     private void updateBacklog() {
         this.backlogList.removeAll();
 
-        if (PluginState.getInstance().hasReviewConfig()) {
+        if (projectState.hasReviewConfig()) {
             this.shownSubmissionsLabel.setText("Disabled");
             this.backlogList.add(
                     TextBuilder.immutable("No backlog in review mode").text());
@@ -209,7 +211,7 @@ public class BacklogPanel extends JPanel {
         this.backlogList.add(
                 TextBuilder.immutable(getRoundName(assessment.round())).text());
         this.backlogList.add(createScoreItem(assessment), "alignx right");
-        this.backlogList.add(createActionButton(assessment), "growx");
+        this.backlogList.add(createActionButton(assessment, this.projectState), "growx");
     }
 
     private static JComponent createResultDateLabel(PackedAssessment assessment) {
@@ -235,7 +237,7 @@ public class BacklogPanel extends JPanel {
         return TextBuilder.immutable(resultText).text();
     }
 
-    private static JButton createActionButton(PackedAssessment assessment) {
+    private static JButton createActionButton(PackedAssessment assessment, ProjectState projectState) {
         // Action Button
         JButton reopenButton;
         if (assessment.isSubmitted()) {
@@ -244,7 +246,7 @@ public class BacklogPanel extends JPanel {
             reopenButton = new JButton("Continue");
             reopenButton.setForeground(JBColor.ORANGE);
         }
-        reopenButton.addActionListener(a -> PluginState.getInstance().reopenAssessment(assessment));
+        reopenButton.addActionListener(a -> projectState.reopenAssessment(assessment));
 
         return reopenButton;
     }

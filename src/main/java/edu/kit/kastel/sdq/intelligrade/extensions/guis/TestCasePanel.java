@@ -4,64 +4,66 @@ package edu.kit.kastel.sdq.intelligrade.extensions.guis;
 import javax.swing.JPanel;
 
 import com.intellij.icons.AllIcons;
+import com.intellij.ide.HelpTooltipKt;
 import com.intellij.openapi.Disposable;
+import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.SimpleToolWindowPanel;
+import com.intellij.openapi.util.text.HtmlChunk;
 import com.intellij.ui.ScrollPaneFactory;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBPanel;
-import edu.kit.kastel.sdq.intelligrade.state.PluginState;
+import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import net.miginfocom.swing.MigLayout;
 
 public class TestCasePanel extends SimpleToolWindowPanel {
     private final JPanel content;
 
-    public TestCasePanel(Disposable parentDisposable) {
+    public TestCasePanel(Disposable parentDisposable, Project project) {
         super(true, true);
 
         this.content = new JBPanel<>(new MigLayout("wrap 3, gapx 10px, gapy 5px", "[][][]"));
 
         setContent(ScrollPaneFactory.createScrollPane(content));
 
-        PluginState.getInstance()
-                .registerAssessmentStartedListener(
-                        assessment -> {
-                            this.content.removeAll();
+        var pluginState = ProjectState.getInstance(project);
 
-                            var testResults = assessment.getAssessment().getTestResults();
-                            for (var result : testResults) {
-                                String tooltip = result.getDetailText().orElse("No details available");
+        pluginState.registerAssessmentStartedListener(
+                assessment -> {
+                    this.content.removeAll();
 
-                                // isPositive() is true if the test passed, regardless of its points
-                                // (which may be zero for mandatory tests)
-                                var icon = result.getPositive()
-                                        .map(p -> p
-                                                ? AllIcons.RunConfigurations.TestPassed
-                                                : AllIcons.RunConfigurations.TestFailed)
-                                        .orElse(AllIcons.RunConfigurations.TestUnknown);
-                                var iconLabel = new JBLabel(icon);
-                                iconLabel.setToolTipText(tooltip);
-                                this.content.add(iconLabel);
+                    var testResults = assessment.getAssessment().getTestResults();
+                    for (var result : testResults) {
+                        String tooltip = result.getDetailText().orElse("No details available");
 
-                                var testName = new JBLabel(result.getTestName());
-                                testName.setToolTipText(tooltip);
-                                this.content.add(testName);
+                        // isPositive() is true if the test passed, regardless of its points
+                        // (which may be zero for mandatory tests)
+                        var icon = result.getPositive()
+                                .map(p -> p
+                                        ? AllIcons.RunConfigurations.TestPassed
+                                        : AllIcons.RunConfigurations.TestFailed)
+                                .orElse(AllIcons.RunConfigurations.TestUnknown);
+                        var iconLabel = new JBLabel(icon);
+                        HelpTooltipKt.setToolTipText(iconLabel, HtmlChunk.text(tooltip));
+                        this.content.add(iconLabel);
 
-                                String points =
-                                        result.getPoints() != 0.0 ? String.format("%.3fP", result.getPoints()) : "";
-                                this.content.add(new JBLabel(points));
-                            }
+                        var testName = new JBLabel(result.getTestName());
+                        HelpTooltipKt.setToolTipText(testName, HtmlChunk.text(tooltip));
+                        this.content.add(testName);
 
-                            updateUI();
-                        },
-                        parentDisposable);
+                        String points = result.getPoints() != 0.0 ? String.format("%.3fP", result.getPoints()) : "";
+                        this.content.add(new JBLabel(points));
+                    }
 
-        PluginState.getInstance()
-                .registerAssessmentClosedListener(
-                        () -> {
-                            this.content.removeAll();
-                            this.content.add(new JBLabel("No active assessment"), "spanx 3, alignx center");
-                            updateUI();
-                        },
-                        parentDisposable);
+                    updateUI();
+                },
+                parentDisposable);
+
+        pluginState.registerAssessmentClosedListener(
+                () -> {
+                    this.content.removeAll();
+                    this.content.add(new JBLabel("No active assessment"), "spanx 3, alignx center");
+                    updateUI();
+                },
+                parentDisposable);
     }
 }

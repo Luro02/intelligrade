@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2025. */
+/* Licensed under EPL-2.0 2025-2026. */
 package edu.kit.kastel.sdq.intelligrade.widgets;
 
 import java.awt.Color;
@@ -45,7 +45,7 @@ import com.intellij.ui.dsl.builder.components.DslLabelType;
 import com.intellij.util.ui.JBFont;
 import com.intellij.util.ui.JBUI;
 import com.intellij.util.ui.UIUtil;
-import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtil;
+import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import edu.kit.kastel.sdq.intelligrade.utils.KeyPress;
 import org.jetbrains.annotations.Nullable;
 
@@ -450,7 +450,7 @@ public final class TextBuilder {
 
     private static String spanText(String text, @Nullable Color color) {
         if (color != null) {
-            return "<span style=\"color: %s\">%s</span>".formatted(IntellijUtil.colorToCSS(color), text);
+            return "<span style=\"color: %s\">%s</span>".formatted(ProjectState.colorToCSS(color), text);
         } else {
             return "<span style=\"\">%s</span>".formatted(text);
         }

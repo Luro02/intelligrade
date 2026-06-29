@@ -1,11 +1,12 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.listeners;
 
 import java.util.List;
 
 import com.intellij.ide.AppLifecycleListener;
+import com.intellij.openapi.application.ApplicationManager;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisCredentialsProvider;
-import edu.kit.kastel.sdq.intelligrade.state.PluginState;
+import edu.kit.kastel.sdq.intelligrade.state.ArtemisConnectionService;
 import org.jspecify.annotations.NonNull;
 
 /**
@@ -18,6 +19,8 @@ public class OnPlugInLoad implements AppLifecycleListener {
     public void appFrameCreated(@NonNull List<String> commandLineArgs) {
         AppLifecycleListener.super.appFrameCreated(commandLineArgs);
         ArtemisCredentialsProvider.getInstance().initialize();
-        PluginState.getInstance().connect();
+        ApplicationManager.getApplication()
+                .getService(ArtemisConnectionService.class)
+                .connect();
     }
 }

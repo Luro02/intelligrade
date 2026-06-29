@@ -1,10 +1,11 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.extensions.settings;
 
 import java.util.Objects;
 
 import javax.swing.*;
 
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.fileChooser.FileChooserDescriptor;
 import com.intellij.openapi.options.Configurable;
 import com.intellij.openapi.ui.TextBrowseFolderListener;
@@ -19,7 +20,7 @@ import com.intellij.ui.components.JBPanel;
 import com.intellij.ui.components.JBPasswordField;
 import com.intellij.ui.components.JBRadioButton;
 import com.intellij.ui.components.JBTextField;
-import edu.kit.kastel.sdq.intelligrade.state.PluginState;
+import edu.kit.kastel.sdq.intelligrade.state.ArtemisConnectionService;
 import net.miginfocom.swing.MigLayout;
 import org.jspecify.annotations.Nullable;
 
@@ -49,6 +50,12 @@ public class ArtemisSettings implements Configurable {
     private ThemeColorPanel activeAssessmentButtonColorChooser;
     private ThemeColorPanel finishedAssessmentButtonColorChooser;
     private ThemeColorPanel reportingAssessmentButtonColorChooser;
+
+    private final ArtemisConnectionService connectionService;
+
+    public ArtemisSettings() {
+        this.connectionService = ApplicationManager.getApplication().getService(ArtemisConnectionService.class);
+    }
 
     /**
      * This class is a color picker that changes the color to select based on the current theme.
@@ -122,7 +129,7 @@ public class ArtemisSettings implements Configurable {
             ArtemisCredentialsProvider.getInstance().setJwt(null);
             ArtemisSettingsState.getInstance().setJwtExpiry(null);
             this.apply();
-            PluginState.getInstance().connect();
+            this.connectionService.connect();
         });
         contentPanel.add(loginButton, "span 1, growx");
 
@@ -130,7 +137,7 @@ public class ArtemisSettings implements Configurable {
         var logoutButton = new JButton("Logout");
         logoutButton.addActionListener(a -> {
             // request a logout
-            PluginState.getInstance().logout();
+            this.connectionService.logout();
             this.apply();
         });
         contentPanel.add(logoutButton, "span 1, growx");

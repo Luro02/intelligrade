@@ -38,8 +38,7 @@ import com.intellij.ui.treeStructure.treetable.TreeTable;
 import com.intellij.ui.treeStructure.treetable.TreeTableCellRenderer;
 import com.intellij.ui.treeStructure.treetable.TreeTableModel;
 import edu.kit.kastel.sdq.artemis4j.grading.Annotation;
-import edu.kit.kastel.sdq.intelligrade.state.PluginState;
-import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtil;
+import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import org.jspecify.annotations.NonNull;
 
 public class AnnotationsTreeTable extends TreeTable {
@@ -50,6 +49,8 @@ public class AnnotationsTreeTable extends TreeTable {
 
     private final AnnotationsTableModel model;
     private final Map<Integer, SortOrder> columnSortOrder = new HashMap<>();
+    private final ProjectState projectState;
+    private final Project project;
 
     private static Comparator<AnnotationsTreeNode> getColumnComparator(int columnIdx, SortOrder sortOrder) {
         var comparator = delegatingColumnComparator(columnIdx);
@@ -66,9 +67,11 @@ public class AnnotationsTreeTable extends TreeTable {
         return order.get((order.indexOf(current) + 1) % order.size());
     }
 
-    public AnnotationsTreeTable(AnnotationsTableModel model) {
+    public AnnotationsTreeTable(AnnotationsTableModel model, Project project) {
         super(model);
         this.model = model;
+        this.project = project;
+        this.projectState = ProjectState.getInstance(project);
         this.installListeners();
 
         getTableHeader().setReorderingAllowed(false);
@@ -187,7 +190,6 @@ public class AnnotationsTreeTable extends TreeTable {
                     editCustomMessageOfSelection();
                 } else {
                     // Jump to the line in the editor
-                    var project = IntellijUtil.getActiveProject();
                     var descriptor = createAnnotationDescriptor(project, annotation);
                     if (descriptor.isEmpty()) {
                         return true;
@@ -203,7 +205,7 @@ public class AnnotationsTreeTable extends TreeTable {
 
     private static Optional<OpenFileDescriptor> createAnnotationDescriptor(Project project, Annotation annotation) {
         return ReadAction.computeBlocking(() -> {
-            var path = IntellijUtil.getAnnotationPath(annotation);
+            var path = ProjectState.getInstance(project).getAnnotationPath(annotation);
             var file = VfsUtil.findFile(path, true);
             if (file == null) {
                 throw new IllegalStateException("File not found: " + path);
@@ -279,10 +281,7 @@ public class AnnotationsTreeTable extends TreeTable {
         }
 
         // Edit the custom message
-        PluginState.getInstance()
-                .getActiveAssessment()
-                .orElseThrow()
-                .changeCustomMessage(annotationNode.getAnnotation());
+        this.projectState.getActiveAssessment().orElseThrow().changeCustomMessage(annotationNode.getAnnotation());
     }
 
     public List<Annotation> getSelectedAnnotations() {
@@ -304,7 +303,7 @@ public class AnnotationsTreeTable extends TreeTable {
         List<Annotation> annotationsToDelete = getSelectedAnnotations();
 
         LOG.debug("Deleting annotations: " + annotationsToDelete);
-        var assessment = PluginState.getInstance().getActiveAssessment().orElseThrow();
+        var assessment = this.projectState.getActiveAssessment().orElseThrow();
         for (var annotation : annotationsToDelete) {
             assessment.deleteAnnotation(annotation);
         }
@@ -314,7 +313,7 @@ public class AnnotationsTreeTable extends TreeTable {
         List<Annotation> annotationsToRestore = getSelectedAnnotations();
 
         LOG.debug("Restoring annotations: " + annotationsToRestore);
-        var assessment = PluginState.getInstance().getActiveAssessment().orElseThrow();
+        var assessment = this.projectState.getActiveAssessment().orElseThrow();
         for (var annotation : annotationsToRestore) {
             assessment.restoreAnnotation(annotation);
         }

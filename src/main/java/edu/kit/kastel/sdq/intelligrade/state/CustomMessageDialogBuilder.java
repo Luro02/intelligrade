@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2025. */
+/* Licensed under EPL-2.0 2025-2026. */
 package edu.kit.kastel.sdq.intelligrade.state;
 
 import java.awt.EventQueue;
@@ -12,16 +12,17 @@ import javax.swing.JSpinner;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.text.BadLocationException;
 
+import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.popup.ComponentPopupBuilder;
 import com.intellij.openapi.ui.popup.JBPopup;
 import com.intellij.openapi.ui.popup.JBPopupFactory;
 import com.intellij.ui.components.JBPanel;
 import edu.kit.kastel.sdq.artemis4j.grading.penalty.MistakeType;
 import edu.kit.kastel.sdq.intelligrade.extensions.CustomCommentField;
-import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtil;
 import net.miginfocom.swing.MigLayout;
 
 public class CustomMessageDialogBuilder {
+    private final Project project;
     private final ComponentPopupBuilder builder;
     private final JBPanel<JBPanel<?>> mainPanel;
     private final CustomCommentField field;
@@ -34,7 +35,8 @@ public class CustomMessageDialogBuilder {
         return info == null || info.warning;
     }
 
-    private CustomMessageDialogBuilder(String initialMessage) {
+    private CustomMessageDialogBuilder(String initialMessage, Project project) {
+        this.project = project;
         this.mainPanel = new JBPanel<>(new MigLayout("wrap 2, fill", "[250lp] []"));
         this.field = CustomCommentField.with(initialMessage);
 
@@ -51,8 +53,7 @@ public class CustomMessageDialogBuilder {
                 .setBelongsToGlobalPopupStack(true)
                 .setCancelKeyEnabled(true)
                 .setMayBeParent(true)
-                .setDimensionServiceKey(
-                        IntellijUtil.getActiveProject(), this.getClass().getCanonicalName(), false)
+                .setDimensionServiceKey(project, this.getClass().getCanonicalName(), false)
                 .setCancelCallback(this::canExit);
 
         this.field.commentField().addKeyListener(new KeyAdapter() {
@@ -80,8 +81,8 @@ public class CustomMessageDialogBuilder {
         this.mainPanel.add(this.field, "spanx 2, grow, hmin 100lp, gp 300");
     }
 
-    public static CustomMessageDialogBuilder create(String initialMessage) {
-        return new CustomMessageDialogBuilder(initialMessage);
+    public static CustomMessageDialogBuilder create(String initialMessage, Project project) {
+        return new CustomMessageDialogBuilder(initialMessage, project);
     }
 
     public CustomMessageDialogBuilder onSubmit(Consumer<MessageWithPoints> onSubmit) {
@@ -125,7 +126,7 @@ public class CustomMessageDialogBuilder {
         this.popup = this.builder.createPopup();
         // Attach the validator to the lifecycle of the popup:
         this.field.registerValidator(this.popup);
-        this.popup.showCenteredInCurrentWindow(IntellijUtil.getActiveProject());
+        this.popup.showCenteredInCurrentWindow(project);
     }
 
     public record MessageWithPoints(String message, double points) {}

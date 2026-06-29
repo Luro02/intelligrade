@@ -66,7 +66,7 @@ class ReopenAssessmentService(
             }
 
             reporter.sizedStep(80, "Cloning...") {
-                AssessmentTracker.initializeAssessment(assessment.get())
+                project.service<AssessmentTracker>().initializeAssessment(assessment.get())
             }
         } catch (e: ArtemisNetworkException) {
             LOG.warn(e)

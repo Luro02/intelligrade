@@ -1,6 +1,7 @@
 /* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.listeners;
 
+import java.nio.file.Path;
 import java.util.Arrays;
 
 import com.intellij.ide.projectView.ProjectView;
@@ -25,39 +26,42 @@ import com.intellij.psi.search.GlobalSearchScopes;
 import com.intellij.psi.search.PsiShortNamesCache;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
 import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment;
-import edu.kit.kastel.sdq.intelligrade.state.PluginState;
-import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtil;
+import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 
-@Service
+@Service(Service.Level.PROJECT)
 public final class FileOpener implements DumbService.DumbModeListener, Disposable {
     private static final Logger LOG = Logger.getInstance(FileOpener.class);
 
     private volatile boolean openClassesNextTime = false;
 
-    public static FileOpener getInstance() {
-        return ApplicationManager.getApplication().getService(FileOpener.class);
+    private final Project project;
+    private final ProjectState projectState;
+
+    public static FileOpener getInstance(Project project) {
+        return project.getService(FileOpener.class);
     }
 
-    public FileOpener() {
-        PluginState.getInstance()
-                .registerAssessmentStartedListener(
-                        a -> {
-                            var settings = ArtemisSettingsState.getInstance();
-                            synchronized (this) {
-                                openClassesNextTime = settings.isAutoOpenMainClass();
-                            }
-                        },
-                        this);
+    public FileOpener(Project project) {
+        this.project = project;
+        this.projectState = ProjectState.getInstance(project);
 
-        PluginState.getInstance()
-                .registerAssessmentClosedListener(
-                        () -> {
-                            // Relevant if building indices is not finished before the assessment is closed
-                            synchronized (this) {
-                                openClassesNextTime = false;
-                            }
-                        },
-                        this);
+        projectState.registerAssessmentStartedListener(
+                a -> {
+                    var settings = ArtemisSettingsState.getInstance();
+                    synchronized (this) {
+                        openClassesNextTime = settings.isAutoOpenMainClass();
+                    }
+                },
+                this);
+
+        projectState.registerAssessmentClosedListener(
+                () -> {
+                    // Relevant if building indices is not finished before the assessment is closed
+                    synchronized (this) {
+                        openClassesNextTime = false;
+                    }
+                },
+                this);
     }
 
     @Override
@@ -69,7 +73,7 @@ public final class FileOpener implements DumbService.DumbModeListener, Disposabl
 
     @Override
     public void exitDumbMode() {
-        if (!openClassesNextTime || !PluginState.getInstance().isAssessing()) {
+        if (!openClassesNextTime || !projectState.isAssessing()) {
             return;
         }
 
@@ -77,18 +81,16 @@ public final class FileOpener implements DumbService.DumbModeListener, Disposabl
         // Do this in the background because it may cause a synchronous vfs refresh
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             synchronized (this) {
-                if (!openClassesNextTime || !PluginState.getInstance().isAssessing()) {
+                if (!openClassesNextTime || !projectState.isAssessing()) {
                     return;
                 }
 
                 openClassesNextTime = false;
             }
 
-            var project = IntellijUtil.getActiveProject();
-
+            var projectRoot = Path.of(project.getBasePath() == null ? "" : project.getBasePath());
             // Only look in assignment/, we aren't interested in test classes
-            var directory = VfsUtil.findFile(
-                    IntellijUtil.getProjectRootDirectory().resolve(ActiveAssessment.ASSIGNMENT_SUB_PATH), true);
+            var directory = VfsUtil.findFile(projectRoot.resolve(ActiveAssessment.ASSIGNMENT_SUB_PATH), true);
 
             if (directory == null) {
                 LOG.warn("Can't resolve assignment directory");
@@ -172,7 +174,7 @@ public final class FileOpener implements DumbService.DumbModeListener, Disposabl
             FileEditorManager.getInstance(project).openTextEditor(new OpenFileDescriptor(project, file, offset), true);
 
             // Expand the project view and select the file
-            ProjectView.getInstance(IntellijUtil.getActiveProject()).select(null, file, true);
+            ProjectView.getInstance(project).select(null, file, true);
         });
     }
 }
