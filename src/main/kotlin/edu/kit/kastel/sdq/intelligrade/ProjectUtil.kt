@@ -1,5 +1,6 @@
 package edu.kit.kastel.sdq.intelligrade
 
+import com.intellij.openapi.application.readAction
 import com.intellij.openapi.application.writeAction
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
@@ -9,7 +10,7 @@ import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.lang.JavaVersion
-import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtil
+import edu.kit.kastel.sdq.intelligrade.state.ProjectState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -28,11 +29,11 @@ object ProjectUtil {
         }
     }
 
-    suspend fun forceFilesSync() =
+    suspend fun forceFilesSync(project: Project) =
         coroutineScope {
             val rootVirtualFile =
                 withContext(Dispatchers.IO) {
-                    VfsUtil.findFileByIoFile(IntellijUtil.getProjectRootDirectory().toFile(), true)
+                    VfsUtil.findFileByIoFile(ProjectState.getInstance(project).getProjectRootDirectory().toFile(), true)
                 }
             if (rootVirtualFile == null) {
                 LOG.warn("Root virtual file is null, cannot force files sync")
@@ -53,16 +54,19 @@ object ProjectUtil {
             }
         }
 
+    const val JAVA_SDK_TYPE_NAME: String = "JavaSDK"
+    const val TARGET_SDK_VERSION: Int = 25
+
     /**
      * Checks if the active project has a JDK set and if not, it will set a JDK.
      */
-    suspend fun updateProjectSDK() {
+    suspend fun updateProjectSDK(project: Project) {
         // It is amazing how much is possible, the difficult part is finding the right classes
         // that do what you want... this was much more work than it looks like.
-        val manager = ProjectRootManager.getInstance(IntellijUtil.getActiveProject())
+        val manager = ProjectRootManager.getInstance(project)
 
         // check if SDK is already set
-        val projectSdk = manager.projectSdk
+        val projectSdk = readAction { manager.projectSdk }
         if (projectSdk != null) {
             LOG.debug("SDK already set: " + projectSdk.versionString)
             return
@@ -71,7 +75,7 @@ object ProjectUtil {
         // if not, set the SDK.
         val jdkTable = ProjectJdkTable.getInstance()
 
-        val javaSdkTypeId = jdkTable.getSdkTypeByName(IntellijUtil.JAVA_SDK_TYPE_NAME)
+        val javaSdkTypeId = jdkTable.getSdkTypeByName(JAVA_SDK_TYPE_NAME)
 
         val availableSdks = ProjectJdkTable.getInstance().getSdksOfType(javaSdkTypeId)
         if (availableSdks.isEmpty()) {
@@ -93,7 +97,7 @@ object ProjectUtil {
                 continue
             }
 
-            if (JavaVersion.parse(availableSdk.versionString!!).isAtLeast(IntellijUtil.TARGET_SDK_VERSION)) {
+            if (JavaVersion.parse(availableSdk.versionString!!).isAtLeast(TARGET_SDK_VERSION)) {
                 // update the project sdk, this has to be done in a dedicated thread to prevent crashes
 
                 writeAction { manager.projectSdk = availableSdk }
@@ -101,6 +105,6 @@ object ProjectUtil {
             }
         }
 
-        LOG.error("No suitable SDK found, please install a JDK with version " + IntellijUtil.TARGET_SDK_VERSION + " or higher")
+        LOG.error("No suitable SDK found, please install a JDK with version $TARGET_SDK_VERSION or higher")
     }
 }

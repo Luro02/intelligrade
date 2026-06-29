@@ -30,7 +30,7 @@ import edu.kit.kastel.sdq.artemis4j.grading.PackedAssessment;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingExercise;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingSubmission;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingSubmissionWithResults;
-import edu.kit.kastel.sdq.intelligrade.state.PluginState;
+import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils;
 import net.miginfocom.swing.MigLayout;
 import org.jetbrains.annotations.Nls;
@@ -43,19 +43,22 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
     private JBLabel shownSubmissionsLabel;
     private JBTable studentsTable;
 
+    private final ProjectState projectState;
+
     private List<ProgrammingSubmissionWithResults> allSubmissions = new ArrayList<>();
 
-    public static void showDialog() {
-        ApplicationManager.getApplication().invokeLater(() -> new SubmissionsInstructorDialog().show());
+    public static void showDialog(Project project) {
+        ApplicationManager.getApplication().invokeLater(() -> new SubmissionsInstructorDialog(project).show());
     }
 
-    public SubmissionsInstructorDialog() {
-        super((Project) null);
+    public SubmissionsInstructorDialog(Project project) {
+        super(project);
 
         this.setTitle("All Submissions");
         this.setModal(false);
         this.init();
-        PluginState.getInstance().registerExerciseSelectedListener(this::fetchSubmissions, getDisposable());
+        this.projectState = project.getService(ProjectState.class);
+        this.projectState.registerExerciseSelectedListener(this::fetchSubmissions, getDisposable());
     }
 
     @Override
@@ -80,8 +83,8 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
         searchPanel.add(shownSubmissionsLabel, "");
 
         var refreshButton = new JButton(AllIcons.Actions.Refresh);
-        refreshButton.addActionListener(a ->
-                fetchSubmissions(PluginState.getInstance().getActiveExercise().orElse(null)));
+        refreshButton.addActionListener(
+                a -> fetchSubmissions(this.projectState.getActiveExercise().orElse(null)));
         searchPanel.add(refreshButton);
 
         panel.add(searchPanel, "growx");
@@ -175,7 +178,7 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
         statusPanel.add(studentPanel, "spanx 3, growx");
 
         // action button
-        boolean review = PluginState.getInstance().hasReviewConfig();
+        boolean review = this.projectState.hasReviewConfig();
         JBLabel configInfo = new JBLabel();
         if (review) {
             configInfo.setText("You have a review config");
@@ -257,14 +260,14 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
             }
             actionButton.addActionListener(a -> {
                 this.close(OK_EXIT_CODE);
-                PluginState.getInstance().reopenAssessment(assessment);
+                this.projectState.reopenAssessment(assessment);
             });
         } else {
             actionButton = new JButton("Start");
             actionButton.setForeground(JBColor.GREEN);
             actionButton.addActionListener(a -> {
                 this.close(OK_EXIT_CODE);
-                PluginState.getInstance().startAssessment(submission, round);
+                this.projectState.startAssessment(submission, round);
             });
         }
         actionButton.setEnabled(allowEdit);

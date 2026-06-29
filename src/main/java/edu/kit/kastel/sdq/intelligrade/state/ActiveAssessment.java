@@ -4,13 +4,17 @@ package edu.kit.kastel.sdq.intelligrade.state;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Consumer;
 
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
+import com.intellij.openapi.fileEditor.FileEditorManager;
+import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.TextRange;
 import edu.kit.kastel.sdq.artemis4j.grading.Annotation;
 import edu.kit.kastel.sdq.artemis4j.grading.Assessment;
@@ -24,7 +28,6 @@ import edu.kit.kastel.sdq.intelligrade.autograder.AutograderTask;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.AutograderOption;
 import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils;
-import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtil;
 
 public class ActiveAssessment {
     private static final Logger LOG = Logger.getInstance(ActiveAssessment.class);
@@ -35,15 +38,19 @@ public class ActiveAssessment {
 
     private final Assessment assessment;
     private final ClonedProgrammingSubmission clonedSubmission;
+    private final Project project;
+    private final ProjectState projectState;
 
-    public ActiveAssessment(Assessment assessment, ClonedProgrammingSubmission clonedSubmission) {
+    public ActiveAssessment(Assessment assessment, ClonedProgrammingSubmission clonedSubmission, Project project) {
         this.assessment = assessment;
         this.clonedSubmission = clonedSubmission;
+        this.project = project;
+        this.projectState = ProjectState.getInstance(project);
     }
 
     public void registerAnnotationsUpdatedListener(Consumer<List<Annotation>> listener) {
         annotationsUpdatedListener.add(listener);
-        listener.accept(assessment.getAnnotations(true));
+        notifyAnnotationListener(listener, assessment.getAnnotations(true));
     }
 
     public GradingConfig getGradingConfig() {
@@ -94,12 +101,16 @@ public class ActiveAssessment {
         return new Location(path, start, end);
     }
 
+    private Editor getActiveEditor() {
+        return FileEditorManager.getInstance(project).getSelectedTextEditor();
+    }
+
     public void addAnnotationAtCaret(MistakeType mistakeType, boolean withCustomMessage) {
         if (assessment == null) {
             throw new IllegalStateException("No active assessment");
         }
 
-        var editor = IntellijUtil.getActiveEditor();
+        var editor = getActiveEditor();
         if (editor == null) {
             // no editor open or no selection made
             ArtemisUtils.displayGenericErrorBalloon(
@@ -107,28 +118,37 @@ public class ActiveAssessment {
             return;
         }
 
-        var file = FileDocumentManager.getInstance().getFile(editor.getDocument());
-        if (file == null || !file.isInLocalFileSystem()) {
+        var target = ReadAction.computeBlocking(() -> createAnnotationTarget(editor));
+        if (target.isEmpty()) {
             ArtemisUtils.displayGenericErrorBalloon(
                     "No local file selected", "Cannot create annotation without a local source file");
             return;
         }
 
-        var path = Path.of(IntellijUtil.getActiveProject().getBasePath())
+        if (mistakeType.isCustomAnnotation()) {
+            addCustomAnnotation(mistakeType, target.get().location());
+        } else if (withCustomMessage) {
+            addPredefinedAnnotationWithCustomMessage(mistakeType, target.get().location());
+        } else {
+            assessment.addPredefinedAnnotation(mistakeType, target.get().location(), null);
+            this.notifyListeners();
+        }
+    }
+
+    private Optional<AnnotationTarget> createAnnotationTarget(Editor editor) {
+        var file = FileDocumentManager.getInstance().getFile(editor.getDocument());
+        if (file == null || !file.isInLocalFileSystem()) {
+            return Optional.empty();
+        }
+
+        var path = projectState
+                .getProjectRootDirectory()
                 .resolve(ASSIGNMENT_SUB_PATH)
                 .relativize(file.toNioPath())
                 .toString()
                 .replace("\\", "/");
-        var location = createLocationFromSelection(editor, path);
 
-        if (mistakeType.isCustomAnnotation()) {
-            addCustomAnnotation(mistakeType, location);
-        } else if (withCustomMessage) {
-            addPredefinedAnnotationWithCustomMessage(mistakeType, location);
-        } else {
-            assessment.addPredefinedAnnotation(mistakeType, location, null);
-            this.notifyListeners();
-        }
+        return Optional.of(new AnnotationTarget(createLocationFromSelection(editor, path)));
     }
 
     public void deleteAnnotation(Annotation annotation) {
@@ -161,7 +181,7 @@ public class ActiveAssessment {
             return;
         }
 
-        AutograderTask.execute(assessment, clonedSubmission, this::notifyListeners);
+        AutograderTask.execute(project, assessment, clonedSubmission, this::notifyListeners);
     }
 
     public Assessment getAssessment() {
@@ -213,13 +233,23 @@ public class ActiveAssessment {
     }
 
     private void notifyListeners() {
+        var annotations = this.assessment.getAnnotations(true);
         for (Consumer<List<Annotation>> listener : this.annotationsUpdatedListener) {
-            listener.accept(this.assessment.getAnnotations(true));
+            notifyAnnotationListener(listener, annotations);
         }
     }
 
-    public static void showCustomMessageDialog(String initialMessage, Consumer<String> onOk) {
-        CustomMessageDialogBuilder.create(initialMessage)
+    private static void notifyAnnotationListener(Consumer<List<Annotation>> listener, List<Annotation> annotations) {
+        if (ApplicationManager.getApplication().isDispatchThread()) {
+            listener.accept(annotations);
+            return;
+        }
+
+        ApplicationManager.getApplication().invokeLater(() -> listener.accept(annotations));
+    }
+
+    public void showCustomMessageDialog(String initialMessage, Consumer<String> onOk) {
+        CustomMessageDialogBuilder.create(initialMessage, project)
                 .onSubmit(messageWithPoints -> onOk.accept(messageWithPoints.message()))
                 .showNotModal();
     }
@@ -229,9 +259,11 @@ public class ActiveAssessment {
             String initialMessage,
             double initialPoints,
             Consumer<CustomMessageDialogBuilder.MessageWithPoints> onOk) {
-        CustomMessageDialogBuilder.create(initialMessage)
+        CustomMessageDialogBuilder.create(initialMessage, project)
                 .onSubmit(onOk)
                 .allowCustomScore(mistakeType, initialPoints)
                 .showNotModal();
     }
+
+    private record AnnotationTarget(Location location) {}
 }

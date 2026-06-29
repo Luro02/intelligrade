@@ -20,29 +20,31 @@ import org.jspecify.annotations.NonNull;
 public class MainToolWindowFactory implements ToolWindowFactory, DumbAware {
     @Override
     public void createToolWindowContent(@NonNull Project project, @NonNull ToolWindow toolWindow) {
-        toolWindow.getContentManager().addContent(createExerciseContent(toolWindow));
-        toolWindow.getContentManager().addContent(createGradingContent());
-        toolWindow.getContentManager().addContent(createTestResultsContent());
+        toolWindow.getContentManager().addContent(createExerciseContent(project, toolWindow));
+        toolWindow.getContentManager().addContent(createGradingContent(project));
+        toolWindow.getContentManager().addContent(createTestResultsContent(project));
     }
 
-    private static Content createExerciseContent(ToolWindow toolWindow) {
+    private static Content createExerciseContent(@NonNull Project project, ToolWindow toolWindow) {
         var disposable = Disposer.newDisposable("IntelliGrade Exercise Panel");
         var content = ContentFactory.getInstance()
-                .createContent(new ExercisePanel(toolWindow, disposable), "Exercise", false);
+                .createContent(new ExercisePanel(project, toolWindow, disposable), "Exercise", false);
         content.setDisposer(disposable);
         return content;
     }
 
-    private static Content createGradingContent() {
+    private static Content createGradingContent(@NonNull Project project) {
         var disposable = Disposer.newDisposable("IntelliGrade Grading Panel");
-        var content = ContentFactory.getInstance().createContent(new AssessmentPanel(disposable), "Grading", false);
+        var content =
+                ContentFactory.getInstance().createContent(new AssessmentPanel(disposable, project), "Grading", false);
         content.setDisposer(disposable);
         return content;
     }
 
-    private static Content createTestResultsContent() {
+    private static Content createTestResultsContent(@NonNull Project project) {
         var disposable = Disposer.newDisposable("IntelliGrade Test Results Panel");
-        var content = ContentFactory.getInstance().createContent(new TestCasePanel(disposable), "Test Results", false);
+        var content = ContentFactory.getInstance()
+                .createContent(new TestCasePanel(disposable, project), "Test Results", false);
         content.setDisposer(disposable);
         return content;
     }

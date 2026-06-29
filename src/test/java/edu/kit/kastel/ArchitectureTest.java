@@ -13,7 +13,7 @@ import com.intellij.openapi.Disposable;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.lang.ArchRule;
-import edu.kit.kastel.sdq.intelligrade.state.PluginState;
+import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import org.junit.jupiter.api.Test;
 
 @AnalyzeClasses(packages = "edu.kit.kastel.sdq.intelligrade")
@@ -38,7 +38,7 @@ class ArchitectureTest {
 
     @Test
     void pluginStateListenerRegistrationRequiresParentDisposable() {
-        for (var method : PluginState.class.getDeclaredMethods()) {
+        for (var method : ProjectState.class.getDeclaredMethods()) {
             if (!method.getName().matches("register.*Listeners?")) {
                 continue;
             }

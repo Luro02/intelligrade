@@ -1,10 +1,11 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.actions;
 
 import java.awt.event.ActionEvent;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.util.Locale;
+import java.util.Optional;
 
 import javax.swing.AbstractAction;
 
@@ -20,9 +21,10 @@ import com.intellij.openapi.ui.popup.JBPopupFactory;
 import com.intellij.ui.AnActionButton;
 import com.intellij.ui.popup.list.ListPopupImpl;
 import edu.kit.kastel.sdq.artemis4j.grading.penalty.MistakeType;
-import edu.kit.kastel.sdq.intelligrade.state.PluginState;
+import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils;
 import org.jspecify.annotations.NonNull;
+import org.jspecify.annotations.Nullable;
 
 public class AddAnnotationPopupAction extends AnAction {
     private static final Locale LOCALE = DynamicBundle.getLocale();
@@ -32,27 +34,41 @@ public class AddAnnotationPopupAction extends AnAction {
         return ActionUpdateThread.BGT;
     }
 
-    @Override
-    public void update(@NonNull AnActionEvent e) {
-        Caret caret = e.getData(CommonDataKeys.CARET);
-
-        // if no exercise config is loaded, we cannot make annotations
-        // if there is no caret we can not sensibly display a popup
-        e.getPresentation()
-                .setEnabledAndVisible(caret != null && PluginState.getInstance().isAssessing());
+    private static Optional<ProjectState> getPluginState(@Nullable AnActionEvent event) {
+        return Optional.ofNullable(AnAction.getEventProject(event)).map(ProjectState::getInstance);
     }
 
     @Override
-    public void actionPerformed(@NonNull AnActionEvent e) {
-        Caret caret = e.getData(CommonDataKeys.CARET);
+    public void update(@NonNull AnActionEvent event) {
+        Caret caret = event.getData(CommonDataKeys.CARET);
 
-        // if no exercise config is loaded, we cannot make annotations
-        // if there is no caret we can not sensibly display a popup
-        if (caret == null || !PluginState.getInstance().isAssessing()) {
+        var pluginState = getPluginState(event).orElse(null);
+        if (pluginState == null) {
+            event.getPresentation().setEnabledAndVisible(false);
             return;
         }
 
-        var assessment = PluginState.getInstance().getActiveAssessment().orElseThrow();
+        // if no exercise config is loaded, we cannot make annotations
+        // if there is no caret we can not sensibly display a popup
+        event.getPresentation().setEnabledAndVisible(caret != null && pluginState.isAssessing());
+    }
+
+    @Override
+    public void actionPerformed(@NonNull AnActionEvent event) {
+        Caret caret = event.getData(CommonDataKeys.CARET);
+
+        var pluginState = getPluginState(event).orElse(null);
+        if (pluginState == null) {
+            return;
+        }
+
+        // if no exercise config is loaded, we cannot make annotations
+        // if there is no caret we can not sensibly display a popup
+        if (caret == null || !pluginState.isAssessing()) {
+            return;
+        }
+
+        var assessment = pluginState.getActiveAssessment().orElseThrow();
 
         // in review mode, no new annotations can be created
         if (assessment.isReview()) {
@@ -107,13 +123,15 @@ public class AddAnnotationPopupAction extends AnAction {
         }
 
         @Override
-        public void actionPerformed(@NonNull AnActionEvent e) {
+        public void actionPerformed(@NonNull AnActionEvent event) {
             boolean withCustomMessage =
-                    e.getInputEvent() != null && e.getInputEvent().isControlDown();
-            PluginState.getInstance()
-                    .getActiveAssessment()
-                    .orElseThrow()
-                    .addAnnotationAtCaret(mistakeType, withCustomMessage);
+                    event.getInputEvent() != null && event.getInputEvent().isControlDown();
+            var pluginState = getPluginState(event).orElse(null);
+            if (pluginState == null) {
+                return;
+            }
+
+            pluginState.getActiveAssessment().orElseThrow().addAnnotationAtCaret(mistakeType, withCustomMessage);
         }
 
         @Override

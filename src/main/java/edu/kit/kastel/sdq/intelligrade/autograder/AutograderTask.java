@@ -1,4 +1,4 @@
-/* Licensed under EPL-2.0 2024-2025. */
+/* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.autograder;
 
 import java.io.IOException;
@@ -16,6 +16,7 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.Task;
+import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBPanel;
@@ -28,29 +29,38 @@ import edu.kit.kastel.sdq.artemis4j.grading.autograder.AutograderRunner;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.AutograderOption;
 import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils;
-import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtil;
 import edu.kit.kastel.sdq.intelligrade.widgets.MessageUtils;
 import edu.kit.kastel.sdq.intelligrade.widgets.TextBuilder;
 import net.miginfocom.swing.MigLayout;
 import org.jetbrains.annotations.NotNull;
+import org.jspecify.annotations.NonNull;
 
 public final class AutograderTask extends Task.Backgroundable {
     private static final Logger LOG = Logger.getInstance(AutograderTask.class);
 
+    private final Project project;
     private final Assessment assessment;
     private final ClonedProgrammingSubmission clonedSubmission;
     private final Runnable onSuccessCallback;
 
     public static void execute(
-            Assessment assessment, ClonedProgrammingSubmission clonedSubmission, Runnable onSuccessCallback) {
-        new AutograderTask(assessment, clonedSubmission, onSuccessCallback)
+            @NonNull Project project,
+            Assessment assessment,
+            ClonedProgrammingSubmission clonedSubmission,
+            Runnable onSuccessCallback) {
+        new AutograderTask(project, assessment, clonedSubmission, onSuccessCallback)
                 .setCancelText("Stop Autograder")
                 .queue();
     }
 
-    private AutograderTask(Assessment assessment, ClonedProgrammingSubmission clonedSubmission, Runnable onSuccess) {
-        super(IntellijUtil.getActiveProject(), "Autograder", true);
+    private AutograderTask(
+            @NonNull Project project,
+            Assessment assessment,
+            ClonedProgrammingSubmission clonedSubmission,
+            Runnable onSuccess) {
+        super(project, "Autograder", true);
 
+        this.project = project;
         this.assessment = assessment;
         this.clonedSubmission = clonedSubmission;
         this.onSuccessCallback = onSuccess;
@@ -91,7 +101,7 @@ public final class AutograderTask extends Task.Backgroundable {
         }
     }
 
-    private static void showAutograderErrorPopup(int annotationsMade, Iterable<FailureInformation> failures) {
+    private void showAutograderErrorPopup(int annotationsMade, Iterable<FailureInformation> failures) {
         var mainPanel = new JBPanel<>(new MigLayout("wrap", "[grow]", "[][][grow]"));
         mainPanel.add(new JBLabel("Autograder made %d annotation(s).".formatted(annotationsMade)), "growx");
         mainPanel.add(new JBLabel("However, the following failures occurred during execution:"), "growx");
@@ -111,7 +121,7 @@ public final class AutograderTask extends Task.Backgroundable {
                         .updateCaretPosition(area -> 0)
                         .component(),
                 "grow");
-        MessageUtils.showWarning("Autograder Completed with Failures", mainPanel);
+        MessageUtils.showWarning(project, "Autograder Completed with Failures", mainPanel);
     }
 
     private boolean loadAutograderFromFile(ArtemisSettingsState settings, ProgressIndicator indicator) {

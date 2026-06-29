@@ -16,72 +16,72 @@ import com.intellij.openapi.Disposable;
 import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
+import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.SimpleToolWindowPanel;
 import com.intellij.openapi.ui.popup.JBPopupFactory;
-import com.intellij.openapi.wm.ToolWindowManager;
 import com.intellij.ui.AnActionButton;
 import com.intellij.ui.PopupHandler;
 import com.intellij.ui.ScrollPaneFactory;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBPanel;
 import com.intellij.ui.components.JBTextField;
+import edu.kit.kastel.sdq.artemis4j.ArtemisNetworkException;
 import edu.kit.kastel.sdq.artemis4j.grading.Annotation;
-import edu.kit.kastel.sdq.artemis4j.grading.User;
+import edu.kit.kastel.sdq.artemis4j.grading.ArtemisConnectionHolder;
+import edu.kit.kastel.sdq.artemis4j.grading.UserIdentifier;
 import edu.kit.kastel.sdq.intelligrade.extensions.guis.table.AnnotationsTableModel;
 import edu.kit.kastel.sdq.intelligrade.extensions.guis.table.AnnotationsTreeTable;
-import edu.kit.kastel.sdq.intelligrade.state.PluginState;
-import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtil;
+import edu.kit.kastel.sdq.intelligrade.state.AnnotationSelectionService;
+import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import net.miginfocom.swing.MigLayout;
 import org.jspecify.annotations.NonNull;
 
 public class AnnotationsListPanel extends SimpleToolWindowPanel {
+    private static final Logger LOG = Logger.getInstance(AnnotationsListPanel.class);
+
+    private final Project project;
+    private final ProjectState projectState;
     private final AnnotationsTableModel model;
     private final AnnotationsTreeTable table;
 
-    public static AnnotationsListPanel getPanel() {
-        var toolWindow =
-                ToolWindowManager.getInstance(IntellijUtil.getActiveProject()).getToolWindow("Annotations");
-        return (AnnotationsListPanel)
-                toolWindow.getContentManager().getContent(0).getComponent();
-    }
-
     private final Disposable parentDisposable;
 
-    public AnnotationsListPanel(Disposable parentDisposable) {
+    public AnnotationsListPanel(Disposable parentDisposable, @NonNull Project project) {
         super(true, true);
+        AnnotationSelectionService.getInstance(project).registerPanel(this, parentDisposable);
+        this.project = project;
+        this.projectState = ProjectState.getInstance(project);
         this.parentDisposable = parentDisposable;
 
-        model = new AnnotationsTableModel();
-        table = new AnnotationsTreeTable(model);
+        this.model = new AnnotationsTableModel();
+        this.table = new AnnotationsTreeTable(model, project);
 
         setContent(ScrollPaneFactory.createScrollPane(table));
 
         // Add the right-click menu
         addPopupMenu();
 
-        PluginState.getInstance()
-                .registerAssessmentStartedListener(
-                        assessment -> assessment.registerAnnotationsUpdatedListener(annotations -> {
-                            // save the currently expanded paths (so they stay open after the annotations change)
-                            Set<TreePath> expandedPaths =
-                                    new HashSet<>(table.getTree().getExpandedPaths());
-                            model.setAnnotations(annotations);
+        projectState.registerAssessmentStartedListener(
+                assessment -> assessment.registerAnnotationsUpdatedListener(annotations -> {
+                    // save the currently expanded paths (so they stay open after the annotations change)
+                    Set<TreePath> expandedPaths = new HashSet<>(table.getTree().getExpandedPaths());
+                    model.setAnnotations(annotations);
 
-                            table.revalidate();
-                            table.updateUI();
+                    table.revalidate();
+                    table.updateUI();
 
-                            // restore the expanded paths
-                            table.getTree().expandPaths(expandedPaths);
-                        }),
-                        parentDisposable);
+                    // restore the expanded paths
+                    table.getTree().expandPaths(expandedPaths);
+                }),
+                parentDisposable);
 
-        PluginState.getInstance()
-                .registerAssessmentClosedListener(
-                        () -> {
-                            model.setAnnotations(List.of());
-                            table.updateUI();
-                        },
-                        parentDisposable);
+        projectState.registerAssessmentClosedListener(
+                () -> {
+                    model.setAnnotations(List.of());
+                    table.updateUI();
+                },
+                parentDisposable);
     }
 
     public void selectAnnotation(Annotation annotation) {
@@ -130,16 +130,15 @@ public class AnnotationsListPanel extends SimpleToolWindowPanel {
             }
         };
         // only show the restore button in review mode
-        PluginState.getInstance()
-                .registerAssessmentStartedListener(
-                        assessment -> {
-                            if (assessment.isReview()) {
-                                group.addAction(restoreButton);
-                            } else {
-                                group.remove(restoreButton);
-                            }
-                        },
-                        parentDisposable);
+        projectState.registerAssessmentStartedListener(
+                assessment -> {
+                    if (assessment.isReview()) {
+                        group.addAction(restoreButton);
+                    } else {
+                        group.remove(restoreButton);
+                    }
+                },
+                parentDisposable);
 
         // Adds a debug button to the right-click menu in the table.
         //
@@ -169,15 +168,29 @@ public class AnnotationsListPanel extends SimpleToolWindowPanel {
         PopupHandler.installPopupMenu(table, group, "popup@AnnotationsListPanel");
     }
 
-    private String mapAssessorId(Long id) {
+    private String mapAssessor(UserIdentifier id) {
         return Optional.ofNullable(id)
-                .map(aLong -> "%s (%d)"
-                        .formatted(
-                                PluginState.getInstance()
-                                        .resolveAssessorId(aLong)
-                                        .map(User::getLogin)
-                                        .orElse("?"),
-                                aLong))
+                .map(uid -> {
+                    try {
+                        var connection = projectState
+                                .getActiveExercise()
+                                .map(ArtemisConnectionHolder::getConnection)
+                                .orElse(null);
+
+                        if (connection == null) {
+                            return null;
+                        }
+
+                        return connection
+                                .findUserByUserIdentifier(uid)
+                                .map(value -> "%s (%d)".formatted(value.getLogin(), value.getId()))
+                                .orElse(null);
+
+                    } catch (ArtemisNetworkException exception) {
+                        LOG.warn("failed to fetch user for id %s".formatted(id), exception);
+                        return null;
+                    }
+                })
                 .orElse("?");
     }
 
@@ -196,11 +209,10 @@ public class AnnotationsListPanel extends SimpleToolWindowPanel {
                 Map.entry("Path", location.filePath()),
                 Map.entry("Start", location.start().toString()),
                 Map.entry("End", location.end().toString()),
-                Map.entry("Created By", mapAssessorId(annotation.getCreatorId().orElse(null))),
+                Map.entry("Created By", mapAssessor(annotation.getCreator().orElse(null))),
                 Map.entry("Suppressed", annotation.isSuppressed() ? "Yes" : "No"),
                 Map.entry(
-                        "Suppressed By",
-                        mapAssessorId(annotation.getSuppressorId().orElse(null))),
+                        "Suppressed By", mapAssessor(annotation.getSuppressor().orElse(null))),
                 Map.entry("Classifiers", annotation.getClassifiers().toString()));
 
         for (var entry : data) {
@@ -227,6 +239,6 @@ public class AnnotationsListPanel extends SimpleToolWindowPanel {
 
         okButton.addActionListener(a -> popup.closeOk((InputEvent) EventQueue.getCurrentEvent()));
 
-        popup.showCenteredInCurrentWindow(IntellijUtil.getActiveProject());
+        popup.showCenteredInCurrentWindow(project);
     }
 }

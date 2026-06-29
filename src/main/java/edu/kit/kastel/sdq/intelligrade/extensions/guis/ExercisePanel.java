@@ -17,6 +17,7 @@ import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory;
+import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.ui.componentsList.components.ScrollablePanel;
 import com.intellij.openapi.ui.ComboBox;
 import com.intellij.openapi.ui.ComponentValidator;
@@ -46,9 +47,9 @@ import edu.kit.kastel.sdq.artemis4j.grading.PackedAssessment;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingExercise;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
 import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment;
-import edu.kit.kastel.sdq.intelligrade.state.PluginState;
+import edu.kit.kastel.sdq.intelligrade.state.ArtemisConnectionService;
+import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils;
-import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtil;
 import edu.kit.kastel.sdq.intelligrade.widgets.FlowWrapLayout;
 import edu.kit.kastel.sdq.intelligrade.widgets.TextBuilder;
 import net.miginfocom.swing.MigLayout;
@@ -56,6 +57,10 @@ import org.jspecify.annotations.NonNull;
 
 public class ExercisePanel extends SimpleToolWindowPanel {
     private static final Logger LOG = Logger.getInstance(ExercisePanel.class);
+
+    private final Project project;
+    private final ProjectState projectState;
+    private final ArtemisConnectionService connectionService;
 
     private final ToolWindow parentToolWindow;
     private final JTextComponent connectedLabel;
@@ -102,10 +107,13 @@ public class ExercisePanel extends SimpleToolWindowPanel {
         return new ComboBox<>(0);
     }
 
-    public ExercisePanel(ToolWindow toolWindow, Disposable parentDisposable) {
+    public ExercisePanel(@NonNull Project project, ToolWindow toolWindow, Disposable parentDisposable) {
         super(true, true);
 
         this.parentToolWindow = toolWindow;
+        this.project = project;
+        this.projectState = project.getService(ProjectState.class);
+        this.connectionService = ApplicationManager.getApplication().getService(ArtemisConnectionService.class);
 
         connectedLabel = TextBuilder.immutable("")
                 .horizontalAlignment(TextBuilder.Alignment.CENTER)
@@ -146,7 +154,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
         content.add(assessmentOrReviewPanel, "spanx 2, growx");
 
         content.add(new TitledSeparator("Backlog"), "spanx 2, growx");
-        backlogPanel = new BacklogPanel();
+        backlogPanel = new BacklogPanel(this.projectState);
         backlogPanel.addBacklogUpdateListener(this::updateBacklogAndStats);
         content.add(backlogPanel, "spanx 2, growx");
 
@@ -161,15 +169,14 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
         courseSelector.addItemListener(this::handleCourseSelected);
 
-        PluginState.getInstance().registerConnectedListener(this::handleConnectionChange, parentDisposable);
+        this.connectionService.listenForChange(this::handleConnectionChange, parentDisposable);
 
-        PluginState.getInstance().registerAssessmentStartedListener(this::handleAssessmentStarted, parentDisposable);
+        this.projectState.registerAssessmentStartedListener(this::handleAssessmentStarted, parentDisposable);
 
-        PluginState.getInstance().registerAssessmentClosedListener(this::handleAssessmentClosed, parentDisposable);
+        this.projectState.registerAssessmentClosedListener(this::handleAssessmentClosed, parentDisposable);
 
-        PluginState.getInstance()
-                .registerGradingConfigChangedListener(
-                        gradingConfigDTO -> this.handleGradingConfigChanged(), parentDisposable);
+        this.projectState.registerGradingConfigChangedListener(
+                gradingConfigDTO -> this.handleGradingConfigChanged(), parentDisposable);
     }
 
     private void createGeneralPanel() {
@@ -182,19 +189,17 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
         startGradingRound1Button = createWrappingButton("Start Grading Round 1");
         startGradingRound1Button.setForeground(JBColor.GREEN);
-        startGradingRound1Button.addActionListener(
-                a -> PluginState.getInstance().startNextAssessment(CorrectionRound.FIRST));
+        startGradingRound1Button.addActionListener(a -> projectState.startNextAssessment(CorrectionRound.FIRST));
         generalPanel.add(startGradingRound1Button, "grow");
 
         startGradingRound2Button = createWrappingButton("Start Grading Round 2");
         startGradingRound2Button.setForeground(JBColor.GREEN);
-        startGradingRound2Button.addActionListener(
-                a -> PluginState.getInstance().startNextAssessment(CorrectionRound.SECOND));
+        startGradingRound2Button.addActionListener(a -> projectState.startNextAssessment(CorrectionRound.SECOND));
         generalPanel.add(startGradingRound2Button, "grow");
 
         openInstructorDialog = createWrappingButton("Show All Submissions");
         openInstructorDialog.setForeground(JBColor.GREEN);
-        openInstructorDialog.addActionListener(a -> SubmissionsInstructorDialog.showDialog());
+        openInstructorDialog.addActionListener(a -> SubmissionsInstructorDialog.showDialog(project));
         openInstructorDialog.setVisible(false);
         generalPanel.add(openInstructorDialog, "grow");
 
@@ -205,7 +210,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
                         return new ValidationInfo("No grading config selected", gradingConfigPathInput);
                     }
 
-                    if (PluginState.getInstance().getGradingConfigDTO(false).isEmpty()) {
+                    if (projectState.getGradingConfigDTO(false).isEmpty()) {
                         return new ValidationInfo("Selected grading config is invalid", gradingConfigPathInput);
                     }
 
@@ -220,7 +225,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
         gradingConfigPathInput.getTextField().getDocument().addDocumentListener(new DocumentAdapter() {
             @Override
             protected void textChanged(@NonNull DocumentEvent documentEvent) {
-                PluginState.getInstance().setSelectedGradingConfigPath(gradingConfigPathInput.getText());
+                projectState.setSelectedGradingConfigPath(gradingConfigPathInput.getText());
 
                 updateSelectedExercise();
                 updateAvailableActions();
@@ -255,7 +260,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
         submitAssessmentButton = createWrappingButton("Submit Assessment");
         submitAssessmentButton.setForeground(JBColor.GREEN);
-        submitAssessmentButton.addActionListener(a -> PluginState.getInstance().submitAssessment());
+        submitAssessmentButton.addActionListener(a -> this.projectState.submitAssessment());
         assessmentPanel.add(submitAssessmentButton, "grow");
 
         cancelAssessmentButton = createWrappingButton("Cancel Assessment");
@@ -266,13 +271,13 @@ public class ExercisePanel extends SimpleToolWindowPanel {
                     .guessWindowAndAsk();
 
             if (confirmed) {
-                PluginState.getInstance().cancelAssessment();
+                this.projectState.cancelAssessment();
             }
         });
         assessmentPanel.add(cancelAssessmentButton, "grow");
 
         saveAssessmentButton = createWrappingButton("Save Assessment");
-        saveAssessmentButton.addActionListener(a -> PluginState.getInstance().saveAssessment());
+        saveAssessmentButton.addActionListener(a -> this.projectState.saveAssessment());
         assessmentPanel.add(saveAssessmentButton, "grow");
 
         closeAssessmentButton = createWrappingButton("Close Assessment");
@@ -282,7 +287,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
                     .guessWindowAndAsk();
 
             if (confirmed) {
-                PluginState.getInstance().closeAssessment();
+                this.projectState.closeAssessment();
             }
         });
         assessmentPanel.add(closeAssessmentButton, "grow");
@@ -294,7 +299,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
                     .guessWindowAndAsk();
 
             if (confirmed) {
-                PluginState.getInstance().getActiveAssessment().orElseThrow().runAutograder();
+                this.projectState.getActiveAssessment().orElseThrow().runAutograder();
             }
         });
 
@@ -306,7 +311,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
         submitReviewButton = createWrappingButton("Submit Review");
         submitReviewButton.setForeground(JBColor.GREEN);
-        submitReviewButton.addActionListener(a -> PluginState.getInstance().submitAssessment());
+        submitReviewButton.addActionListener(a -> this.projectState.submitAssessment());
         reviewPanel.add(submitReviewButton, "grow");
 
         cancelReviewButton = createWrappingButton("Cancel Review");
@@ -315,7 +320,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
                     .guessWindowAndAsk();
 
             if (confirmed) {
-                PluginState.getInstance().closeAssessment();
+                this.projectState.closeAssessment();
             }
         });
         reviewPanel.add(cancelReviewButton, "grow");
@@ -325,7 +330,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
         // This functions consolidates all the logic that enables/disables buttons and panels
         // based on whether we have an active assessment and review/don't review
 
-        if (PluginState.getInstance().hasReviewConfig()) {
+        if (this.projectState.hasReviewConfig()) {
             modeInfoLabel.setText("Review Mode (you have a review config)");
             // Show the instructor button:
             openInstructorDialog.setVisible(true);
@@ -335,8 +340,8 @@ public class ExercisePanel extends SimpleToolWindowPanel {
             openInstructorDialog.setVisible(false);
         }
 
-        if (PluginState.getInstance().isAssessing()) {
-            var assessment = PluginState.getInstance().getActiveAssessment().orElseThrow();
+        if (this.projectState.isAssessing()) {
+            var assessment = this.projectState.getActiveAssessment().orElseThrow();
             boolean review = assessment.isReview();
 
             // Assessing -> can't start a new assessment
@@ -360,11 +365,11 @@ public class ExercisePanel extends SimpleToolWindowPanel {
                 reRunAutograder.setEnabled(true);
             }
         } else {
-            boolean review = PluginState.getInstance().hasReviewConfig();
+            boolean review = this.projectState.hasReviewConfig();
 
             // Start buttons
             startGradingRound1Button.setEnabled(!review);
-            var exercise = PluginState.getInstance().getActiveExercise();
+            var exercise = this.projectState.getActiveExercise();
             if (exercise.isPresent()) {
                 startGradingRound2Button.setEnabled(!review && exercise.get().hasSecondCorrectionRound());
             }
@@ -397,7 +402,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
      * exercise (course, exam, grading config).
      */
     private void updateSelectedExercise() {
-        var config = PluginState.getInstance().getGradingConfigDTO(false);
+        var config = this.projectState.getGradingConfigDTO(false);
         if (config.isEmpty()) {
             return;
         }
@@ -444,9 +449,9 @@ public class ExercisePanel extends SimpleToolWindowPanel {
         if (e.getStateChange() != ItemEvent.DESELECTED) {
             var exercise = (ProgrammingExercise) e.getItem();
             startGradingRound2Button.setEnabled(
-                    !PluginState.getInstance().isAssessing() && exercise.hasSecondCorrectionRound());
+                    !this.projectState.isAssessing() && exercise.hasSecondCorrectionRound());
 
-            PluginState.getInstance().setActiveExercise(exercise);
+            this.projectState.setActiveExercise(exercise);
 
             updateBacklogAndStats();
         }
@@ -493,8 +498,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
         try {
             // Enable/disable instructor button(s)
             // Can't use PluginState::isInstructor here, since the exercise is not yet initialized
-            openInstructorDialog.setEnabled(
-                    course.isInstructor(PluginState.getInstance().getAssessor()));
+            openInstructorDialog.setEnabled(course.isInstructor(connectionService.getAssessor()));
 
             // Update the exam selector with the exams of the course
             // This triggers an item event in the exam selector, which updates the exercise selector
@@ -563,11 +567,11 @@ public class ExercisePanel extends SimpleToolWindowPanel {
     private void updateBacklogAndStats() {
         // Fetch data in the background, but do all UI updates on the EDT!
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            if (PluginState.getInstance().getActiveExercise().isEmpty()) {
+            if (this.projectState.getActiveExercise().isEmpty()) {
                 return;
             }
 
-            var exercise = PluginState.getInstance().getActiveExercise().orElseThrow();
+            var exercise = this.projectState.getActiveExercise().orElseThrow();
 
             List<PackedAssessment> assessments;
             AssessmentStatsDTO stats;
@@ -588,8 +592,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
                 updateUI();
 
                 // Tell the user that we've done something
-                ToolWindowManager.getInstance(IntellijUtil.getActiveProject())
-                        .notifyByBalloon("Artemis", MessageType.INFO, "Backlog updated");
+                ToolWindowManager.getInstance(project).notifyByBalloon("Artemis", MessageType.INFO, "Backlog updated");
             });
         });
     }

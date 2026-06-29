@@ -1,30 +1,25 @@
 /* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.state;
 
+import java.awt.Color;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
-import com.intellij.openapi.ui.MessageDialogBuilder;
+import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.Disposer;
-import com.intellij.ui.jcef.JBCefApp;
-import edu.kit.kastel.sdq.artemis4j.ArtemisClientException;
 import edu.kit.kastel.sdq.artemis4j.ArtemisNetworkException;
-import edu.kit.kastel.sdq.artemis4j.client.ArtemisInstance;
-import edu.kit.kastel.sdq.artemis4j.grading.ArtemisConnection;
+import edu.kit.kastel.sdq.artemis4j.grading.Annotation;
 import edu.kit.kastel.sdq.artemis4j.grading.CorrectionRound;
 import edu.kit.kastel.sdq.artemis4j.grading.PackedAssessment;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingExercise;
@@ -37,36 +32,34 @@ import edu.kit.kastel.sdq.intelligrade.EndAssessmentService;
 import edu.kit.kastel.sdq.intelligrade.ReopenAssessmentService;
 import edu.kit.kastel.sdq.intelligrade.StartAssessmentService;
 import edu.kit.kastel.sdq.intelligrade.SubmitAction;
-import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisCredentialsProvider;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
-import edu.kit.kastel.sdq.intelligrade.login.CefUtils;
 import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils;
-import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtil;
 
-@Service
-public final class PluginState {
-    private static final Logger LOG = Logger.getInstance(PluginState.class);
+@Service(Service.Level.PROJECT)
+public final class ProjectState {
+    private static final Logger LOG = Logger.getInstance(ProjectState.class);
 
-    private final List<Consumer<ArtemisConnection>> connectedListeners = new ArrayList<>();
     private final List<Consumer<ProgrammingExercise>> exerciseSelectedListeners = new ArrayList<>();
     private final List<Consumer<ActiveAssessment>> assessmentStartedListeners = new ArrayList<>();
     private final List<Runnable> assessmentClosedListeners = new ArrayList<>();
     private final List<Consumer<GradingConfig.GradingConfigDTO>> gradingConfigChangedListeners = new ArrayList<>();
     private final List<Runnable> missingGradingConfigListeners = new ArrayList<>();
-    private final Map<Long, User> knownAssessors = new HashMap<>();
 
-    private ArtemisConnection connection;
+    private final Project project;
+    private final ArtemisConnectionService connectionService;
     private ProgrammingExercise activeExercise;
     private GradingConfig.GradingConfigDTO cachedGradingConfigDTO;
 
     private ActiveAssessment activeAssessment;
 
-    public PluginState() {
+    public ProjectState(Project project) {
+        this.project = project;
+
         // The code for opening/closing assessments is in kotlin, but this class keeps track of the active assessment
         // as well.
         //
         // With this, PluginState will be notified when an assessment changes.
-        AssessmentTracker.INSTANCE.addListener(changedAssessment -> {
+        AssessmentTracker.getInstance(project).addListener(changedAssessment -> {
             activeAssessment = changedAssessment;
 
             // The invokeLater ensures that the listeners are running on EDT, which is required for UI updates.
@@ -83,103 +76,20 @@ public final class PluginState {
             }
         });
 
+        this.connectionService = ApplicationManager.getApplication().getService(ArtemisConnectionService.class);
+
         // Try to parse the grading config once from storage
         getGradingConfigDTO(false);
     }
 
-    public static PluginState getInstance() {
-        return ApplicationManager.getApplication().getService(PluginState.class);
+    public static ProjectState getInstance(Project project) {
+        return project.getService(ProjectState.class);
     }
 
-    /**
-     * Logs out while displaying a warning if an assessment is still running
-     */
-    public void logout() {
-        boolean answer = true;
-        // check if confirmation is necessary because assessment is running
-        if (isAssessing()) {
-            answer = MessageDialogBuilder.okCancel(
-                            "Logging out while assessing!",
-                            "Logging out while assessing will discard current changes. Continue?")
-                    .guessWindowAndAsk();
-        }
-        // actually reset state
-        if (answer) {
-            this.resetState();
+    public void clearProjectSessionState() {
+        activeExercise = null;
 
-            // reset state in settings
-            ArtemisCredentialsProvider.getInstance().setJwt(null);
-            ArtemisCredentialsProvider.getInstance().setArtemisPassword(null);
-            ArtemisSettingsState.getInstance().setJwtExpiry(null);
-
-            // reset JBCef cookies iff available
-            if (JBCefApp.isSupported()) {
-                CefUtils.resetCookies();
-            }
-        }
-        this.notifyConnectedListeners();
-    }
-
-    public void connect() {
-        this.resetState();
-
-        var settings = ArtemisSettingsState.getInstance();
-        var credentials = ArtemisCredentialsProvider.getInstance();
-
-        String url = settings.getArtemisInstanceUrl();
-        if (!ArtemisUtils.doesUrlExist(url)) {
-            ArtemisUtils.displayGenericErrorBalloon(
-                    "Artemis URL not reachable",
-                    "The Artemis URL is not valid, or you do not have a working internet connection.");
-            this.notifyConnectedListeners();
-            return;
-        }
-
-        var instance = new ArtemisInstance(settings.getArtemisInstanceUrl());
-
-        CompletableFuture<ArtemisConnection> connectionFuture;
-        if (settings.isUseTokenLogin()) {
-            connectionFuture = retrieveJWT().thenApplyAsync(token -> ArtemisConnection.fromToken(instance, token));
-        } else {
-            connectionFuture = CompletableFuture.supplyAsync(() -> {
-                try {
-                    return ArtemisConnection.connectWithUsernamePassword(
-                            instance, settings.getUsername(), credentials.getArtemisPassword());
-                } catch (ArtemisClientException e) {
-                    throw new CompletionException(e);
-                }
-            });
-        }
-
-        connectionFuture
-                .thenAcceptAsync(newConnection -> {
-                    this.connection = newConnection;
-                    try {
-                        this.verifyLogin();
-                        this.notifyConnectedListeners();
-                    } catch (ArtemisClientException e) {
-                        throw new CompletionException(e);
-                    }
-                })
-                .exceptionallyAsync(e -> {
-                    LOG.warn(e);
-                    ArtemisUtils.displayGenericErrorBalloon("Artemis Login failed", e.getMessage());
-                    this.connection = null;
-                    this.notifyConnectedListeners();
-                    return null;
-                });
-    }
-
-    /**
-     * Registers a listener that is called when intelligrade needs the grading config, but it is missing.
-     * <p>
-     * This is used to highlight the input text box in which the grading config should be entered.
-     *
-     * @param listener the listener to be called
-     */
-    public void registerMissingGradingConfigListeners(Runnable listener, Disposable parentDisposable) {
-        this.missingGradingConfigListeners.add(listener);
-        Disposer.register(parentDisposable, () -> this.missingGradingConfigListeners.remove(listener));
+        AssessmentTracker.getInstance(project).clearAssessment();
     }
 
     /**
@@ -199,12 +109,6 @@ public final class PluginState {
         }
     }
 
-    public void registerConnectedListener(Consumer<ArtemisConnection> listener, Disposable parentDisposable) {
-        this.connectedListeners.add(listener);
-        Disposer.register(parentDisposable, () -> this.connectedListeners.remove(listener));
-        listener.accept(this.connection);
-    }
-
     public void registerExerciseSelectedListener(Consumer<ProgrammingExercise> listener, Disposable parentDisposable) {
         this.exerciseSelectedListeners.add(listener);
         Disposer.register(parentDisposable, () -> this.exerciseSelectedListeners.remove(listener));
@@ -213,6 +117,10 @@ public final class PluginState {
 
     public boolean isAssessing() {
         return activeAssessment != null;
+    }
+
+    public boolean hasActiveAssessment() {
+        return isAssessing();
     }
 
     public void startNextAssessment(CorrectionRound correctionRound) {
@@ -239,7 +147,7 @@ public final class PluginState {
             return;
         }
 
-        StartAssessmentService.getInstance(IntellijUtil.getActiveProject())
+        StartAssessmentService.getInstance(project)
                 .queue(correctionRound, gradingConfig.get(), activeExercise, submission);
     }
 
@@ -249,7 +157,7 @@ public final class PluginState {
             return;
         }
 
-        EndAssessmentService.getInstance(IntellijUtil.getActiveProject()).queue(SubmitAction.SAVE);
+        EndAssessmentService.getInstance(project).queue(SubmitAction.SAVE);
     }
 
     public void submitAssessment() {
@@ -258,7 +166,7 @@ public final class PluginState {
             return;
         }
 
-        EndAssessmentService.getInstance(IntellijUtil.getActiveProject()).queue(SubmitAction.SUBMIT);
+        EndAssessmentService.getInstance(project).queue(SubmitAction.SUBMIT);
     }
 
     public void cancelAssessment() {
@@ -267,7 +175,7 @@ public final class PluginState {
             return;
         }
 
-        EndAssessmentService.getInstance(IntellijUtil.getActiveProject()).queue(SubmitAction.CANCEL);
+        EndAssessmentService.getInstance(project).queue(SubmitAction.CANCEL);
     }
 
     public void closeAssessment() {
@@ -276,7 +184,7 @@ public final class PluginState {
             return;
         }
 
-        EndAssessmentService.getInstance(IntellijUtil.getActiveProject()).queue(SubmitAction.CLOSE);
+        EndAssessmentService.getInstance(project).queue(SubmitAction.CLOSE);
     }
 
     public void reopenAssessment(PackedAssessment assessment) {
@@ -295,7 +203,7 @@ public final class PluginState {
             return;
         }
 
-        ReopenAssessmentService.getInstance(IntellijUtil.getActiveProject()).queue(assessment, gradingConfig.get());
+        ReopenAssessmentService.getInstance(project).queue(assessment, gradingConfig.get());
     }
 
     public void setSelectedGradingConfigPath(String path) {
@@ -355,15 +263,7 @@ public final class PluginState {
     }
 
     public User getAssessor() throws ArtemisNetworkException {
-        return connection.getAssessor();
-    }
-
-    public boolean isInstructor() throws ArtemisNetworkException {
-        if (activeExercise == null) {
-            return false;
-        }
-
-        return activeExercise.getCourse().isInstructor(getAssessor());
+        return connectionService.getAssessor();
     }
 
     public void registerAssessmentStartedListener(Consumer<ActiveAssessment> listener, Disposable parentDisposable) {
@@ -379,59 +279,11 @@ public final class PluginState {
         Disposer.register(parentDisposable, () -> this.assessmentClosedListeners.remove(listener));
     }
 
-    private void resetState() {
-        connection = null;
-        activeExercise = null;
-
-        AssessmentTracker.INSTANCE.clearAssessment();
-    }
-
     private void onInvalidGradingConfig(String message) {
         ArtemisUtils.displayGenericErrorBalloon("No/invalid grading config", message);
         for (Runnable missingGradingConfigListener : this.missingGradingConfigListeners) {
             missingGradingConfigListener.run();
         }
-    }
-
-    private CompletableFuture<String> retrieveJWT() {
-        var settings = ArtemisSettingsState.getInstance();
-        var credentials = ArtemisCredentialsProvider.getInstance();
-
-        return CompletableFuture.supplyAsync(() -> {
-            String previousJwt = credentials.getJwt();
-            if (previousJwt != null && !previousJwt.isBlank()) {
-                return previousJwt;
-            }
-
-            if (!JBCefApp.isSupported()) {
-                throw new CompletionException(new IllegalStateException("JCEF unavailable"));
-            }
-
-            try {
-                var cookie = CefUtils.jcefBrowserLogin().get();
-                credentials.setJwt(cookie.getValue());
-                settings.setJwtExpiry(cookie.getExpires());
-                return cookie.getValue();
-            } catch (InterruptedException ex) {
-                Thread.currentThread().interrupt();
-                throw new CompletionException(ex);
-            } catch (ExecutionException e) {
-                throw new CompletionException(e);
-            }
-        });
-    }
-
-    private void verifyLogin() throws ArtemisClientException {
-        // This triggers a request and forces a connection error if the token is invalid
-        this.connection.getAssessor();
-    }
-
-    private void notifyConnectedListeners() {
-        ApplicationManager.getApplication().invokeLater(() -> {
-            for (Consumer<ArtemisConnection> l : this.connectedListeners) {
-                l.accept(this.connection);
-            }
-        });
     }
 
     private Optional<GradingConfig> createGradingConfig() {
@@ -449,39 +301,49 @@ public final class PluginState {
         }
     }
 
-    public Optional<User> resolveAssessorId(long userId) {
-        var exercise = this.getActiveExercise().orElse(null);
-        if (exercise == null) {
-            return Optional.empty();
-        }
+    /**
+     * Returns the root directory of this project.
+     * This is the directory under which the project configuration files (like .idea) are stored.
+     * There are some caveats, see {@link Project#getBasePath()}.
+     *
+     * @return the path to the root directory of this project
+     */
+    public Path getProjectRootDirectory() {
+        var basePath = this.project.getBasePath();
+        return Path.of(Objects.requireNonNullElse(basePath, ""));
+    }
 
-        if (knownAssessors.containsKey(userId)) {
-            return Optional.of(knownAssessors.get(userId));
-        }
-
-        // Start by adding your own id:
-        try {
-            var thisAssessor = this.connection.getAssessor();
-            knownAssessors.putIfAbsent(thisAssessor.getId(), thisAssessor);
-
-            for (var submission : exercise.fetchAllSubmissions()) {
-                var firstRound = submission.getFirstRoundAssessment();
-                if (firstRound != null) {
-                    var assessor = firstRound.getAssessor();
-                    knownAssessors.putIfAbsent(assessor.getId(), assessor);
-                }
-
-                var secondRound = submission.getSecondRoundAssessment();
-                if (secondRound != null) {
-                    var assessor = secondRound.getAssessor();
-                    knownAssessors.putIfAbsent(assessor.getId(), assessor);
-                }
+    private String loadInspectionsProfile() throws IOException {
+        try (var in = ProjectState.class.getResourceAsStream("/Project_Default.xml")) {
+            if (in == null) {
+                throw new IllegalStateException("Default inspections profile not found in resources");
             }
-        } catch (ArtemisNetworkException exception) {
-            LOG.warn(exception);
-            return Optional.empty();
-        }
 
-        return Optional.ofNullable(knownAssessors.get(userId));
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    public void setupProjectProfile() {
+        Path path = Path.of(
+                project.getBasePath(), Project.DIRECTORY_STORE_FOLDER, "inspectionProfiles", "Project_Default.xml");
+
+        try {
+            // create the directory if it does not exist
+            Files.createDirectories(path.getParent());
+            // write the default profile to the file
+            Files.writeString(path, loadInspectionsProfile());
+        } catch (IOException ioException) {
+            throw new IllegalStateException("Could not write default profile", ioException);
+        }
+    }
+
+    public Path getAnnotationPath(Annotation annotation) {
+        return getProjectRootDirectory()
+                .resolve(ActiveAssessment.ASSIGNMENT_SUB_PATH)
+                .resolve(annotation.getFilePath().replace("\\", "/"));
+    }
+
+    public static String colorToCSS(Color color) {
+        return "rgb(%d, %d, %d)".formatted(color.getRed(), color.getGreen(), color.getBlue());
     }
 }
