@@ -32,7 +32,6 @@ import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.vfs.VfsUtil;
 import com.intellij.ui.DoubleClickListener;
 import com.intellij.ui.treeStructure.treetable.TreeTable;
 import com.intellij.ui.treeStructure.treetable.TreeTableCellRenderer;
@@ -205,11 +204,9 @@ public class AnnotationsTreeTable extends TreeTable {
 
     private static Optional<OpenFileDescriptor> createAnnotationDescriptor(Project project, Annotation annotation) {
         return ReadAction.computeBlocking(() -> {
-            var path = ProjectState.getInstance(project).getAnnotationPath(annotation);
-            var file = VfsUtil.findFile(path, true);
-            if (file == null) {
-                throw new IllegalStateException("File not found: " + path);
-            }
+            var file = ProjectState.getInstance(project)
+                    .findAnnotationVirtualFile(annotation)
+                    .orElseThrow(() -> new IllegalStateException("File not found: " + annotation.getFilePath()));
 
             Document document = FileDocumentManager.getInstance().getDocument(file);
             if (document == null

@@ -3,8 +3,8 @@ package edu.kit.kastel.sdq.intelligrade.state;
 
 import java.awt.Color;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -14,10 +14,16 @@ import java.util.function.Consumer;
 
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.WriteAction;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.project.ProjectUtil;
 import com.intellij.openapi.util.Disposer;
+import com.intellij.openapi.vfs.LocalFileSystem;
+import com.intellij.openapi.vfs.VfsUtil;
+import com.intellij.openapi.vfs.VfsUtilCore;
+import com.intellij.openapi.vfs.VirtualFile;
 import edu.kit.kastel.sdq.artemis4j.grading.Annotation;
 import edu.kit.kastel.sdq.artemis4j.grading.CorrectionRound;
 import edu.kit.kastel.sdq.artemis4j.grading.PackedAssessment;
@@ -189,7 +195,13 @@ public final class ProjectState {
             }
 
             try {
-                var fileContent = Files.readString(Path.of(gradingConfigPath));
+                var gradingConfigFile =
+                        LocalFileSystem.getInstance().refreshAndFindFileByNioFile(Path.of(gradingConfigPath));
+                if (gradingConfigFile == null) {
+                    throw new IOException("Grading config file not found: " + gradingConfigPath);
+                }
+
+                var fileContent = VfsUtilCore.loadText(gradingConfigFile);
                 this.cachedGradingConfigDTO = GradingConfig.readDTOFromString(fileContent);
 
                 for (var listener : this.gradingConfigChangedListeners) {
@@ -282,23 +294,40 @@ public final class ProjectState {
     }
 
     public void setupProjectProfile() {
-        Path path = Path.of(
-                project.getBasePath(), Project.DIRECTORY_STORE_FOLDER, "inspectionProfiles", "Project_Default.xml");
-
         try {
-            // create the directory if it does not exist
-            Files.createDirectories(path.getParent());
-            // write the default profile to the file
-            Files.writeString(path, loadInspectionsProfile());
+            var profileContent = loadInspectionsProfile();
+
+            WriteAction.runAndWait(() -> {
+                try {
+                    var baseDirectory = ProjectUtil.guessProjectDir(project);
+                    if (baseDirectory == null) {
+                        throw new IOException("Project base directory is not available");
+                    }
+
+                    var profileDirectory = VfsUtil.createDirectories(
+                            baseDirectory.getPath() + "/" + Project.DIRECTORY_STORE_FOLDER + "/inspectionProfiles");
+                    var profileFile = profileDirectory.findOrCreateChildData(this, "Project_Default.xml");
+                    VfsUtil.saveText(profileFile, profileContent);
+                } catch (IOException ioException) {
+                    throw new UncheckedIOException(ioException);
+                }
+            });
         } catch (IOException ioException) {
             throw new IllegalStateException("Could not write default profile", ioException);
+        } catch (UncheckedIOException ioException) {
+            throw new IllegalStateException("Could not write default profile", ioException.getCause());
         }
     }
 
-    public Path getAnnotationPath(Annotation annotation) {
-        return getProjectRootDirectory()
-                .resolve(ActiveAssessment.ASSIGNMENT_SUB_PATH)
-                .resolve(annotation.getFilePath().replace("\\", "/"));
+    public Optional<VirtualFile> findAnnotationVirtualFile(Annotation annotation) {
+        var baseDirectory = ProjectUtil.guessProjectDir(project);
+        if (baseDirectory == null) {
+            return Optional.empty();
+        }
+
+        var relativePath = ActiveAssessment.ASSIGNMENT_SUB_PATH + "/"
+                + annotation.getFilePath().replace("\\", "/");
+        return Optional.ofNullable(baseDirectory.findFileByRelativePath(relativePath));
     }
 
     public static String colorToCSS(Color color) {
