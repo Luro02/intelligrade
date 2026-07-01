@@ -116,8 +116,8 @@ public final class HighlighterManager implements Disposable {
 
         ProjectState.getInstance(project)
                 .registerAssessmentStartedListener(
-                        assessment -> assessment.registerAnnotationsUpdatedListener(
-                                annotations -> updateHighlightersForAllEditors()),
+                        assessment ->
+                                assessment.registerAnnotationsUpdatedListener(_ -> updateHighlightersForAllEditors()),
                         this);
 
         // When an assessment is closed, clear everything
@@ -195,7 +195,7 @@ public final class HighlighterManager implements Disposable {
             return;
         }
 
-        var highlighterRequests = ReadAction.compute(() -> createHighlighterRequests(editor, annotations));
+        var highlighterRequests = ReadAction.computeBlocking(() -> createHighlighterRequests(editor, annotations));
         if (highlighterRequests.isEmpty()) {
             return;
         }
@@ -211,10 +211,6 @@ public final class HighlighterManager implements Disposable {
                             request.attributes(),
                             request.targetArea()));
             highlightedAnnotations.add(request.annotation());
-        }
-
-        if (highlighters.isEmpty()) {
-            return;
         }
 
         // use the first highlighter for the gutter icon
@@ -317,7 +313,7 @@ public final class HighlighterManager implements Disposable {
     }
 
     private void updateHighlightersForEditor(Editor editor) {
-        var filePath = ReadAction.compute(() -> getLocalEditorFilePath(editor));
+        var filePath = ReadAction.computeBlocking(() -> getLocalEditorFilePath(editor));
         if (filePath.isEmpty()) {
             return;
         }
