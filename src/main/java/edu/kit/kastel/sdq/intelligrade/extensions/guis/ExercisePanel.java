@@ -45,8 +45,10 @@ import edu.kit.kastel.sdq.artemis4j.grading.Course;
 import edu.kit.kastel.sdq.artemis4j.grading.Exam;
 import edu.kit.kastel.sdq.artemis4j.grading.PackedAssessment;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingExercise;
+import edu.kit.kastel.sdq.intelligrade.AssessmentTracker;
 import edu.kit.kastel.sdq.intelligrade.SubmitAction;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
+import edu.kit.kastel.sdq.intelligrade.listeners.AssessmentStateListener;
 import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment;
 import edu.kit.kastel.sdq.intelligrade.state.ArtemisConnectionService;
 import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
@@ -55,6 +57,7 @@ import edu.kit.kastel.sdq.intelligrade.widgets.FlowWrapLayout;
 import edu.kit.kastel.sdq.intelligrade.widgets.TextBuilder;
 import net.miginfocom.swing.MigLayout;
 import org.jspecify.annotations.NonNull;
+import org.jspecify.annotations.Nullable;
 
 public class ExercisePanel extends SimpleToolWindowPanel {
     private static final Logger LOG = Logger.getInstance(ExercisePanel.class);
@@ -172,9 +175,17 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
         this.connectionService.listenForChange(this::handleConnectionChange, parentDisposable);
 
-        this.projectState.registerAssessmentStartedListener(this::handleAssessmentStarted, parentDisposable);
+        AssessmentTracker.getInstance(project).subscribe(parentDisposable, new AssessmentStateListener() {
+            @Override
+            public void activeAssessmentChanged(@Nullable ActiveAssessment assessment) {
+                updateAvailableActions();
 
-        this.projectState.registerAssessmentClosedListener(this::handleAssessmentClosed, parentDisposable);
+                // We don't want the grading config to change while an assessment is in progress
+                gradingConfigPathInput.setEnabled(assessment == null);
+
+                updateBacklogAndStats();
+            }
+        });
 
         this.projectState.registerGradingConfigChangedListener(
                 _ -> this.handleGradingConfigChanged(), parentDisposable);
@@ -547,21 +558,6 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
     private void handleGradingConfigChanged() {
         updateAvailableActions();
-        updateBacklogAndStats();
-    }
-
-    private void handleAssessmentStarted(ActiveAssessment assessment) {
-        updateAvailableActions();
-
-        // We don't want the grading config to change while an assessment is in progress
-        gradingConfigPathInput.setEnabled(false);
-
-        updateBacklogAndStats();
-    }
-
-    private void handleAssessmentClosed() {
-        updateAvailableActions();
-        gradingConfigPathInput.setEnabled(true);
         updateBacklogAndStats();
     }
 

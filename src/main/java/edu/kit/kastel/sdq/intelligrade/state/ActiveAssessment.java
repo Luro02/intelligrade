@@ -2,8 +2,6 @@
 package edu.kit.kastel.sdq.intelligrade.state;
 
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
 
@@ -27,14 +25,13 @@ import edu.kit.kastel.sdq.artemis4j.grading.penalty.MistakeType;
 import edu.kit.kastel.sdq.intelligrade.autograder.AutograderTask;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.AutograderOption;
+import edu.kit.kastel.sdq.intelligrade.listeners.AssessmentStateListener;
 import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils;
 
 public class ActiveAssessment {
     private static final Logger LOG = Logger.getInstance(ActiveAssessment.class);
 
     public static final Path ASSIGNMENT_SUB_PATH = Path.of("assignment");
-
-    private final List<Consumer<List<Annotation>>> annotationsUpdatedListener = new ArrayList<>();
 
     private final Assessment assessment;
     private final ClonedProgrammingSubmission clonedSubmission;
@@ -46,11 +43,6 @@ public class ActiveAssessment {
         this.clonedSubmission = clonedSubmission;
         this.project = project;
         this.projectState = ProjectState.getInstance(project);
-    }
-
-    public void registerAnnotationsUpdatedListener(Consumer<List<Annotation>> listener) {
-        annotationsUpdatedListener.add(listener);
-        notifyAnnotationListener(listener, assessment.getAnnotations(true));
     }
 
     public GradingConfig getGradingConfig() {
@@ -234,18 +226,20 @@ public class ActiveAssessment {
 
     private void notifyListeners() {
         var annotations = this.assessment.getAnnotations(true);
-        for (Consumer<List<Annotation>> listener : this.annotationsUpdatedListener) {
-            notifyAnnotationListener(listener, annotations);
-        }
-    }
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (project.isDisposed()) {
+                return;
+            }
 
-    private static void notifyAnnotationListener(Consumer<List<Annotation>> listener, List<Annotation> annotations) {
-        if (ApplicationManager.getApplication().isDispatchThread()) {
-            listener.accept(annotations);
-            return;
-        }
+            // This callback might be invoked after the active assessment (this) has changed
+            // for the project. Old assessments should not interfere with the new one,
+            // so this is handled here
+            if (ProjectState.getInstance(project).getActiveAssessment().orElse(null) != this) {
+                return;
+            }
 
-        ApplicationManager.getApplication().invokeLater(() -> listener.accept(annotations));
+            project.getMessageBus().syncPublisher(AssessmentStateListener.TOPIC).annotationsChanged(this, annotations);
+        });
     }
 
     public void showCustomMessageDialog(String initialMessage, Consumer<String> onOk) {

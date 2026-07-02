@@ -30,12 +30,16 @@ import edu.kit.kastel.sdq.artemis4j.ArtemisNetworkException;
 import edu.kit.kastel.sdq.artemis4j.grading.Annotation;
 import edu.kit.kastel.sdq.artemis4j.grading.ArtemisConnectionHolder;
 import edu.kit.kastel.sdq.artemis4j.grading.UserIdentifier;
+import edu.kit.kastel.sdq.intelligrade.AssessmentTracker;
 import edu.kit.kastel.sdq.intelligrade.extensions.guis.table.AnnotationsTableModel;
 import edu.kit.kastel.sdq.intelligrade.extensions.guis.table.AnnotationsTreeTable;
+import edu.kit.kastel.sdq.intelligrade.listeners.AssessmentStateListener;
+import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment;
 import edu.kit.kastel.sdq.intelligrade.state.AnnotationSelectionService;
 import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import net.miginfocom.swing.MigLayout;
 import org.jspecify.annotations.NonNull;
+import org.jspecify.annotations.Nullable;
 
 public class AnnotationsListPanel extends SimpleToolWindowPanel {
     private static final Logger LOG = Logger.getInstance(AnnotationsListPanel.class);
@@ -62,26 +66,39 @@ public class AnnotationsListPanel extends SimpleToolWindowPanel {
         // Add the right-click menu
         addPopupMenu();
 
-        projectState.registerAssessmentStartedListener(
-                assessment -> assessment.registerAnnotationsUpdatedListener(annotations -> {
-                    // save the currently expanded paths (so they stay open after the annotations change)
-                    Set<TreePath> expandedPaths = new HashSet<>(table.getTree().getExpandedPaths());
-                    model.setAnnotations(annotations);
+        AssessmentTracker.getInstance(project).subscribe(parentDisposable, new AssessmentStateListener() {
+            @Override
+            public void activeAssessmentChanged(@Nullable ActiveAssessment assessment) {
+                if (assessment == null) {
+                    clearAnnotations();
+                } else {
+                    showAnnotations(assessment.getAssessment().getAnnotations(true));
+                }
+            }
 
-                    table.revalidate();
-                    table.updateUI();
+            @Override
+            public void annotationsChanged(
+                    @NonNull ActiveAssessment assessment, @NonNull List<Annotation> annotations) {
+                showAnnotations(annotations);
+            }
+        });
+    }
 
-                    // restore the expanded paths
-                    table.getTree().expandPaths(expandedPaths);
-                }),
-                parentDisposable);
+    private void showAnnotations(List<Annotation> annotations) {
+        // save the currently expanded paths (so they stay open after the annotations change)
+        Set<TreePath> expandedPaths = new HashSet<>(table.getTree().getExpandedPaths());
+        model.setAnnotations(annotations);
 
-        projectState.registerAssessmentClosedListener(
-                () -> {
-                    model.setAnnotations(List.of());
-                    table.updateUI();
-                },
-                parentDisposable);
+        table.revalidate();
+        table.updateUI();
+
+        // restore the expanded paths
+        table.getTree().expandPaths(expandedPaths);
+    }
+
+    private void clearAnnotations() {
+        model.setAnnotations(List.of());
+        table.updateUI();
     }
 
     public void selectAnnotation(Annotation annotation) {
@@ -129,16 +146,17 @@ public class AnnotationsListPanel extends SimpleToolWindowPanel {
                 return ActionUpdateThread.EDT;
             }
         };
-        // only show the restore button in review mode
-        projectState.registerAssessmentStartedListener(
-                assessment -> {
-                    if (assessment.isReview()) {
-                        group.addAction(restoreButton);
-                    } else {
-                        group.remove(restoreButton);
-                    }
-                },
-                parentDisposable);
+        AssessmentTracker.getInstance(project).subscribe(parentDisposable, new AssessmentStateListener() {
+            @Override
+            public void activeAssessmentChanged(@Nullable ActiveAssessment assessment) {
+                // only show the restore button in review mode
+                if (assessment != null && !assessment.isReview()) {
+                    group.addAction(restoreButton);
+                } else {
+                    group.remove(restoreButton);
+                }
+            }
+        });
 
         // Adds a debug button to the right-click menu in the table.
         //

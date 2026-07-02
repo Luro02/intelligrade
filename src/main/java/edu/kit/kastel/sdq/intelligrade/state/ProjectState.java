@@ -13,7 +13,6 @@ import java.util.Optional;
 import java.util.function.Consumer;
 
 import com.intellij.openapi.Disposable;
-import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.WriteAction;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
@@ -44,39 +43,14 @@ public final class ProjectState {
     private static final Logger LOG = Logger.getInstance(ProjectState.class);
 
     private final List<Consumer<ProgrammingExercise>> exerciseSelectedListeners = new ArrayList<>();
-    private final List<Consumer<ActiveAssessment>> assessmentStartedListeners = new ArrayList<>();
-    private final List<Runnable> assessmentClosedListeners = new ArrayList<>();
     private final List<Consumer<GradingConfig.GradingConfigDTO>> gradingConfigChangedListeners = new ArrayList<>();
 
     private final Project project;
     private ProgrammingExercise activeExercise;
     private GradingConfig.GradingConfigDTO cachedGradingConfigDTO;
 
-    private ActiveAssessment activeAssessment;
-
     public ProjectState(Project project) {
         this.project = project;
-
-        // The code for opening/closing assessments is in kotlin, but this class keeps track of the active assessment
-        // as well.
-        //
-        // With this, PluginState will be notified when an assessment changes.
-        AssessmentTracker.getInstance(project).addListener(changedAssessment -> {
-            activeAssessment = changedAssessment;
-
-            // The invokeLater ensures that the listeners are running on EDT, which is required for UI updates.
-            if (changedAssessment == null) {
-                // Notify listeners that the assessment was closed
-                for (Runnable listener : assessmentClosedListeners) {
-                    ApplicationManager.getApplication().invokeLater(listener);
-                }
-            } else {
-                // Notify listeners that the assessment was started
-                for (Consumer<ActiveAssessment> listener : assessmentStartedListeners) {
-                    ApplicationManager.getApplication().invokeLater(() -> listener.accept(changedAssessment));
-                }
-            }
-        });
 
         // Try to parse the grading config once from storage
         getGradingConfigDTO(false);
@@ -115,12 +89,13 @@ public final class ProjectState {
         listener.accept(this.activeExercise);
     }
 
+    // TODO: This should move to AssessmentTracker
     public boolean isAssessing() {
-        return activeAssessment != null;
+        return AssessmentTracker.getInstance(project).getActiveAssessment() != null;
     }
-
-    public boolean hasActiveAssessment() {
-        return isAssessing();
+    // TODO: This should move to AssessmentTracker
+    public Optional<ActiveAssessment> getActiveAssessment() {
+        return Optional.ofNullable(AssessmentTracker.getInstance(project).getActiveAssessment());
     }
 
     public void startNextAssessment(CorrectionRound correctionRound) {
@@ -233,23 +208,6 @@ public final class ProjectState {
         for (var listener : this.exerciseSelectedListeners) {
             listener.accept(exercise);
         }
-    }
-
-    public Optional<ActiveAssessment> getActiveAssessment() {
-        return Optional.ofNullable(activeAssessment);
-    }
-
-    public void registerAssessmentStartedListener(Consumer<ActiveAssessment> listener, Disposable parentDisposable) {
-        this.assessmentStartedListeners.add(listener);
-        Disposer.register(parentDisposable, () -> this.assessmentStartedListeners.remove(listener));
-        if (this.isAssessing()) {
-            listener.accept(activeAssessment);
-        }
-    }
-
-    public void registerAssessmentClosedListener(Runnable listener, Disposable parentDisposable) {
-        this.assessmentClosedListeners.add(listener);
-        Disposer.register(parentDisposable, () -> this.assessmentClosedListeners.remove(listener));
     }
 
     private void onInvalidGradingConfig(String message) {

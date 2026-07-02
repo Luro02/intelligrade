@@ -24,9 +24,11 @@ import com.intellij.psi.PsiTypes;
 import com.intellij.psi.search.GlobalSearchScope;
 import com.intellij.psi.search.GlobalSearchScopes;
 import com.intellij.psi.search.PsiShortNamesCache;
+import edu.kit.kastel.sdq.intelligrade.AssessmentTracker;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
 import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment;
 import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
+import org.jspecify.annotations.Nullable;
 
 @Service(Service.Level.PROJECT)
 public final class FileOpener implements DumbService.DumbModeListener, Disposable {
@@ -45,23 +47,16 @@ public final class FileOpener implements DumbService.DumbModeListener, Disposabl
         this.project = project;
         this.projectState = ProjectState.getInstance(project);
 
-        projectState.registerAssessmentStartedListener(
-                a -> {
-                    var settings = ArtemisSettingsState.getInstance();
-                    synchronized (this) {
-                        openClassesNextTime = settings.isAutoOpenMainClass();
-                    }
-                },
-                this);
-
-        projectState.registerAssessmentClosedListener(
-                () -> {
-                    // Relevant if building indices is not finished before the assessment is closed
-                    synchronized (this) {
-                        openClassesNextTime = false;
-                    }
-                },
-                this);
+        AssessmentTracker.getInstance(project).subscribeNoInit(this, new AssessmentStateListener() {
+            @Override
+            public void activeAssessmentChanged(@Nullable ActiveAssessment assessment) {
+                var settings = ArtemisSettingsState.getInstance();
+                // Relevant if building indices is not finished before the assessment is closed
+                synchronized (FileOpener.this) {
+                    openClassesNextTime = assessment != null && settings.isAutoOpenMainClass();
+                }
+            }
+        });
     }
 
     @Override

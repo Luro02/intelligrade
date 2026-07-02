@@ -38,6 +38,7 @@ import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBPanel;
 import com.intellij.util.ui.JBFont;
 import com.intellij.util.ui.JBUI;
+import edu.kit.kastel.sdq.artemis4j.grading.Annotation;
 import edu.kit.kastel.sdq.artemis4j.grading.Assessment;
 import edu.kit.kastel.sdq.artemis4j.grading.penalty.CustomPenaltyRule;
 import edu.kit.kastel.sdq.artemis4j.grading.penalty.MistakeType;
@@ -45,14 +46,18 @@ import edu.kit.kastel.sdq.artemis4j.grading.penalty.Points;
 import edu.kit.kastel.sdq.artemis4j.grading.penalty.RatingGroup;
 import edu.kit.kastel.sdq.artemis4j.grading.penalty.StackingPenaltyRule;
 import edu.kit.kastel.sdq.artemis4j.grading.penalty.ThresholdPenaltyRule;
+import edu.kit.kastel.sdq.intelligrade.AssessmentTracker;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ThemeColor;
+import edu.kit.kastel.sdq.intelligrade.listeners.AssessmentStateListener;
 import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment;
 import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import edu.kit.kastel.sdq.intelligrade.utils.KeyPress;
 import edu.kit.kastel.sdq.intelligrade.widgets.FlowWrapLayout;
 import edu.kit.kastel.sdq.intelligrade.widgets.TextBuilder;
 import net.miginfocom.swing.MigLayout;
+import org.jspecify.annotations.NonNull;
+import org.jspecify.annotations.Nullable;
 
 public class AssessmentPanel extends SimpleToolWindowPanel {
     private static final Locale LOCALE = DynamicBundle.getLocale();
@@ -67,7 +72,6 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
     public AssessmentPanel(Disposable parentDisposable, Project project) {
         super(true, true);
 
-        ProjectState projectState = ProjectState.getInstance(project);
         content = new ScrollablePanel(new MigLayout("wrap 1", "[grow]"));
         setContent(ScrollPaneFactory.createScrollPane(
                 content,
@@ -77,36 +81,47 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
         pointsLabel = new JBLabel();
 
         this.showNoActiveAssessment();
-        projectState.registerAssessmentStartedListener(
-                assessment -> {
-                    content.removeAll();
+        AssessmentTracker.getInstance(project).subscribe(parentDisposable, new AssessmentStateListener() {
+            @Override
+            public void activeAssessmentChanged(@Nullable ActiveAssessment assessment) {
+                if (assessment == null) {
+                    showNoActiveAssessment();
+                    return;
+                }
 
-                    content.add(pointsLabel, "alignx center");
+                showAssessment(assessment);
+            }
 
-                    var infoLabel = TextBuilder.immutable("Hold ")
-                            .foreground(JBColor.GRAY)
-                            .addColoredText(
-                                    KeyPress.of(KeyEvent.VK_CONTROL).toString(),
-                                    JBUI.CurrentTheme.Link.Foreground.ENABLED)
-                            .addText(", while pressing a button, to add a custom message")
-                            .horizontalAlignment(TextBuilder.Alignment.CENTER)
-                            .text();
-                    content.add(infoLabel, "alignx center");
+            @Override
+            public void annotationsChanged(
+                    @NonNull ActiveAssessment assessment, @NonNull List<Annotation> annotations) {
+                var currentAssessment = assessment.getAssessment();
+                updatePoints(currentAssessment);
+                updateRatingGroupTitles(currentAssessment);
+                updateButtonIcons(currentAssessment);
+            }
+        });
+    }
 
-                    assessment.registerAnnotationsUpdatedListener(annotations -> {
-                        var a = assessment.getAssessment();
-                        var testPoints = a.calculateTotalPointsOfTests();
-                        var annotationPoints = a.calculateTotalPointsOfAnnotations();
-                        var totalPoints = a.calculateTotalPoints();
-                        var maxPoints = a.getMaxPoints();
-                        pointsLabel.setText(
-                                getAssessmentPointsTitle(testPoints, annotationPoints, totalPoints, maxPoints));
-                    });
+    private void showAssessment(ActiveAssessment assessment) {
+        this.ratingGroupBorders.clear();
+        this.assessmentButtons.clear();
 
-                    this.createMistakeButtons(assessment);
-                },
-                parentDisposable);
-        projectState.registerAssessmentClosedListener(this::showNoActiveAssessment, parentDisposable);
+        content.removeAll();
+
+        content.add(pointsLabel, "alignx center");
+
+        var infoLabel = TextBuilder.immutable("Hold ")
+                .foreground(JBColor.GRAY)
+                .addColoredText(KeyPress.of(KeyEvent.VK_CONTROL).toString(), JBUI.CurrentTheme.Link.Foreground.ENABLED)
+                .addText(", while pressing a button, to add a custom message")
+                .horizontalAlignment(TextBuilder.Alignment.CENTER)
+                .text();
+        content.add(infoLabel, "alignx center");
+
+        updatePoints(assessment.getAssessment());
+        createMistakeButtons(assessment);
+        updateButtonIcons(assessment.getAssessment());
     }
 
     private Component addGroupPanel(
@@ -191,13 +206,15 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
             }
         }
 
-        assessment.registerAnnotationsUpdatedListener(annotations -> {
-            var a = assessment.getAssessment();
-            updateRatingGroupTitles(a);
-            updateButtonIcons(a);
-        });
-
         this.updateUI();
+    }
+
+    private void updatePoints(Assessment assessment) {
+        var testPoints = assessment.calculateTotalPointsOfTests();
+        var annotationPoints = assessment.calculateTotalPointsOfAnnotations();
+        var totalPoints = assessment.calculateTotalPoints();
+        var maxPoints = assessment.getMaxPoints();
+        pointsLabel.setText(getAssessmentPointsTitle(testPoints, annotationPoints, totalPoints, maxPoints));
     }
 
     private void updateRatingGroupTitles(Assessment assessment) {
