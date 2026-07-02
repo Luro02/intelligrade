@@ -185,3 +185,6 @@ grading-config-example.json
 
 # Direnv state
 .direnv/
+
+intellij-community/
+bin/
