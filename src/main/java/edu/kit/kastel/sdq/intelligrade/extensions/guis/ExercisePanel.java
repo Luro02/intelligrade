@@ -45,10 +45,12 @@ import edu.kit.kastel.sdq.artemis4j.grading.Course;
 import edu.kit.kastel.sdq.artemis4j.grading.Exam;
 import edu.kit.kastel.sdq.artemis4j.grading.PackedAssessment;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingExercise;
+import edu.kit.kastel.sdq.artemis4j.grading.penalty.GradingConfig;
 import edu.kit.kastel.sdq.intelligrade.AssessmentTracker;
 import edu.kit.kastel.sdq.intelligrade.SubmitAction;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
 import edu.kit.kastel.sdq.intelligrade.listeners.AssessmentStateListener;
+import edu.kit.kastel.sdq.intelligrade.listeners.ExerciseListener;
 import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment;
 import edu.kit.kastel.sdq.intelligrade.state.ArtemisConnectionService;
 import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
@@ -187,8 +189,13 @@ public class ExercisePanel extends SimpleToolWindowPanel {
             }
         });
 
-        this.projectState.registerGradingConfigChangedListener(
-                _ -> this.handleGradingConfigChanged(), parentDisposable);
+        this.projectState.subscribe(parentDisposable, new ExerciseListener() {
+            @Override
+            public void configChanged(GradingConfig.@NonNull GradingConfigDTO config) {
+                updateAvailableActions();
+                updateBacklogAndStats();
+            }
+        });
     }
 
     private void createGeneralPanel() {
@@ -554,11 +561,6 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
         updateAvailableActions();
         updateUI();
-    }
-
-    private void handleGradingConfigChanged() {
-        updateAvailableActions();
-        updateBacklogAndStats();
     }
 
     private void updateBacklogAndStats() {

@@ -6,19 +6,16 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Consumer;
 
 import com.intellij.openapi.Disposable;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.WriteAction;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.project.ProjectUtil;
-import com.intellij.openapi.util.Disposer;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VfsUtil;
 import com.intellij.openapi.vfs.VfsUtilCore;
@@ -36,14 +33,12 @@ import edu.kit.kastel.sdq.intelligrade.ReopenAssessmentService;
 import edu.kit.kastel.sdq.intelligrade.StartAssessmentService;
 import edu.kit.kastel.sdq.intelligrade.SubmitAction;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
+import edu.kit.kastel.sdq.intelligrade.listeners.ExerciseListener;
 import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils;
 
 @Service(Service.Level.PROJECT)
 public final class ProjectState {
     private static final Logger LOG = Logger.getInstance(ProjectState.class);
-
-    private final List<Consumer<ProgrammingExercise>> exerciseSelectedListeners = new ArrayList<>();
-    private final List<Consumer<GradingConfig.GradingConfigDTO>> gradingConfigChangedListeners = new ArrayList<>();
 
     private final Project project;
     private ProgrammingExercise activeExercise;
@@ -67,26 +62,21 @@ public final class ProjectState {
     }
 
     /**
-     * Registers a listener that is called when the grading config changes.
+     * Registers a listener that is called when the grading config or exercise changes.
      * <p>
-     * This is used to update the UI when the grading config changes.
+     * This is used to update the UI when the grading config or exercise changes.
      *
      * @param listener the listener to be called
      */
-    public void registerGradingConfigChangedListener(
-            Consumer<GradingConfig.GradingConfigDTO> listener, Disposable parentDisposable) {
-        this.gradingConfigChangedListeners.add(listener);
-        Disposer.register(parentDisposable, () -> this.gradingConfigChangedListeners.remove(listener));
+    public void subscribe(Disposable parentDisposable, ExerciseListener listener) {
+        project.getMessageBus().connect(parentDisposable).subscribe(ExerciseListener.TOPIC, listener);
+
         if (this.cachedGradingConfigDTO != null) {
             // If the grading config is already loaded, call the listener immediately
-            listener.accept(this.cachedGradingConfigDTO);
+            listener.configChanged(this.cachedGradingConfigDTO);
         }
-    }
 
-    public void registerExerciseSelectedListener(Consumer<ProgrammingExercise> listener, Disposable parentDisposable) {
-        this.exerciseSelectedListeners.add(listener);
-        Disposer.register(parentDisposable, () -> this.exerciseSelectedListeners.remove(listener));
-        listener.accept(this.activeExercise);
+        listener.exerciseChanged(this.activeExercise);
     }
 
     // TODO: This should move to AssessmentTracker
@@ -159,6 +149,38 @@ public final class ProjectState {
         this.cachedGradingConfigDTO = null;
     }
 
+    private void notifyGradingConfigChanged() {
+        var gradingConfigDTO = this.cachedGradingConfigDTO;
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (project.isDisposed()) {
+                return;
+            }
+
+            // Skip outdated notifications
+            if (gradingConfigDTO != this.cachedGradingConfigDTO) {
+                return;
+            }
+
+            project.getMessageBus().syncPublisher(ExerciseListener.TOPIC).configChanged(gradingConfigDTO);
+        });
+    }
+
+    private void notifyExerciseChanged() {
+        var exercise = this.activeExercise;
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (project.isDisposed()) {
+                return;
+            }
+
+            // Skip outdated notifications
+            if (exercise != this.activeExercise) {
+                return;
+            }
+
+            project.getMessageBus().syncPublisher(ExerciseListener.TOPIC).exerciseChanged(exercise);
+        });
+    }
+
     public Optional<GradingConfig.GradingConfigDTO> getGradingConfigDTO(boolean required) {
         if (this.cachedGradingConfigDTO == null) {
             var gradingConfigPath = ArtemisSettingsState.getInstance().getSelectedGradingConfigPath();
@@ -179,9 +201,7 @@ public final class ProjectState {
                 var fileContent = VfsUtilCore.loadText(gradingConfigFile);
                 this.cachedGradingConfigDTO = GradingConfig.readDTOFromString(fileContent);
 
-                for (var listener : this.gradingConfigChangedListeners) {
-                    listener.accept(this.cachedGradingConfigDTO);
-                }
+                this.notifyGradingConfigChanged();
             } catch (IOException | InvalidGradingConfigException e) {
                 if (required) {
                     LOG.warn(e);
@@ -205,9 +225,7 @@ public final class ProjectState {
 
     public void setActiveExercise(ProgrammingExercise exercise) {
         this.activeExercise = exercise;
-        for (var listener : this.exerciseSelectedListeners) {
-            listener.accept(exercise);
-        }
+        this.notifyExerciseChanged();
     }
 
     private void onInvalidGradingConfig(String message) {

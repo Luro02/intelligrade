@@ -150,7 +150,7 @@ public class AnnotationsListPanel extends SimpleToolWindowPanel {
             @Override
             public void activeAssessmentChanged(@Nullable ActiveAssessment assessment) {
                 // only show the restore button in review mode
-                if (assessment != null && !assessment.isReview()) {
+                if (assessment != null && assessment.isReview()) {
                     group.addAction(restoreButton);
                 } else {
                     group.remove(restoreButton);
