@@ -1,6 +1,8 @@
 package edu.kit.kastel.sdq.intelligrade
 
 import com.intellij.dvcs.repo.VcsRepositoryManager
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.writeAction
 import com.intellij.openapi.components.Service
@@ -21,6 +23,7 @@ import edu.kit.kastel.sdq.artemis4j.grading.ClonedProgrammingSubmission
 import edu.kit.kastel.sdq.artemis4j.grading.CorrectionRound
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.VCSAccessOption
+import edu.kit.kastel.sdq.intelligrade.listeners.AssessmentStateListener
 import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment
 import edu.kit.kastel.sdq.intelligrade.state.ProjectState
 import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils
@@ -30,10 +33,6 @@ import org.eclipse.jgit.lib.RepositoryCache
 import org.eclipse.jgit.storage.file.WindowCacheConfig
 import java.io.IOException
 import java.nio.file.Path
-
-fun interface AssessmentListener {
-    fun update(value: ActiveAssessment?)
-}
 
 private val LOG = logger<AssessmentTracker>()
 
@@ -50,24 +49,48 @@ class AssessmentTracker(
     }
 
     var activeAssessment: ActiveAssessment? = null
-    private val listeners: MutableList<AssessmentListener> = mutableListOf()
 
-    /**
-     * Adds a listener that will be notified when the active assessment changes.
-     *
-     * This can be when a new assessment is started or when the current assessment is cleared.
-     *
-     * Regarding Threading Model: There is no guarantee that the listener will be called on EDT,
-     * make sure to account for that.
-     */
-    fun addListener(listener: AssessmentListener) {
-        listeners.add(listener)
+    fun subscribeNoInit(
+        parentDisposable: Disposable,
+        listener: AssessmentStateListener,
+    ) {
+        project.messageBus
+            .connect(parentDisposable)
+            .subscribe(AssessmentStateListener.TOPIC, listener)
+    }
+
+    fun subscribe(
+        parentDisposable: Disposable,
+        listener: AssessmentStateListener,
+    ) {
+        subscribeNoInit(parentDisposable, listener)
+
+        replayActiveAssessment(listener)
+    }
+
+    private fun replayActiveAssessment(listener: AssessmentStateListener) {
+        val replay =
+            Runnable {
+                if (!project.isDisposed) {
+                    listener.activeAssessmentChanged(activeAssessment)
+                }
+            }
+
+        if (ApplicationManager.getApplication().isDispatchThread) {
+            replay.run()
+        } else {
+            ApplicationManager.getApplication().invokeLater(replay)
+        }
     }
 
     private fun updateAssessment(assessment: ActiveAssessment?) {
         this.activeAssessment = assessment
-        for (listener in listeners) {
-            listener.update(activeAssessment)
+        ApplicationManager.getApplication().invokeLater {
+            if (!project.isDisposed) {
+                project.messageBus
+                    .syncPublisher(AssessmentStateListener.TOPIC)
+                    .activeAssessmentChanged(assessment)
+            }
         }
     }
 

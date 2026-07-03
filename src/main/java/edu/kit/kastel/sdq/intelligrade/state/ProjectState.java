@@ -3,28 +3,28 @@ package edu.kit.kastel.sdq.intelligrade.state;
 
 import java.awt.Color;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Consumer;
 
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.WriteAction;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.util.Disposer;
-import edu.kit.kastel.sdq.artemis4j.ArtemisNetworkException;
+import com.intellij.openapi.project.ProjectUtil;
+import com.intellij.openapi.vfs.LocalFileSystem;
+import com.intellij.openapi.vfs.VfsUtil;
+import com.intellij.openapi.vfs.VfsUtilCore;
+import com.intellij.openapi.vfs.VirtualFile;
 import edu.kit.kastel.sdq.artemis4j.grading.Annotation;
 import edu.kit.kastel.sdq.artemis4j.grading.CorrectionRound;
 import edu.kit.kastel.sdq.artemis4j.grading.PackedAssessment;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingExercise;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingSubmission;
-import edu.kit.kastel.sdq.artemis4j.grading.User;
 import edu.kit.kastel.sdq.artemis4j.grading.penalty.GradingConfig;
 import edu.kit.kastel.sdq.artemis4j.grading.penalty.InvalidGradingConfigException;
 import edu.kit.kastel.sdq.intelligrade.AssessmentTracker;
@@ -33,50 +33,19 @@ import edu.kit.kastel.sdq.intelligrade.ReopenAssessmentService;
 import edu.kit.kastel.sdq.intelligrade.StartAssessmentService;
 import edu.kit.kastel.sdq.intelligrade.SubmitAction;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
+import edu.kit.kastel.sdq.intelligrade.listeners.ExerciseListener;
 import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils;
 
 @Service(Service.Level.PROJECT)
 public final class ProjectState {
     private static final Logger LOG = Logger.getInstance(ProjectState.class);
 
-    private final List<Consumer<ProgrammingExercise>> exerciseSelectedListeners = new ArrayList<>();
-    private final List<Consumer<ActiveAssessment>> assessmentStartedListeners = new ArrayList<>();
-    private final List<Runnable> assessmentClosedListeners = new ArrayList<>();
-    private final List<Consumer<GradingConfig.GradingConfigDTO>> gradingConfigChangedListeners = new ArrayList<>();
-    private final List<Runnable> missingGradingConfigListeners = new ArrayList<>();
-
     private final Project project;
-    private final ArtemisConnectionService connectionService;
     private ProgrammingExercise activeExercise;
     private GradingConfig.GradingConfigDTO cachedGradingConfigDTO;
 
-    private ActiveAssessment activeAssessment;
-
     public ProjectState(Project project) {
         this.project = project;
-
-        // The code for opening/closing assessments is in kotlin, but this class keeps track of the active assessment
-        // as well.
-        //
-        // With this, PluginState will be notified when an assessment changes.
-        AssessmentTracker.getInstance(project).addListener(changedAssessment -> {
-            activeAssessment = changedAssessment;
-
-            // The invokeLater ensures that the listeners are running on EDT, which is required for UI updates.
-            if (changedAssessment == null) {
-                // Notify listeners that the assessment was closed
-                for (Runnable listener : assessmentClosedListeners) {
-                    ApplicationManager.getApplication().invokeLater(listener);
-                }
-            } else {
-                // Notify listeners that the assessment was started
-                for (Consumer<ActiveAssessment> listener : assessmentStartedListeners) {
-                    ApplicationManager.getApplication().invokeLater(() -> listener.accept(changedAssessment));
-                }
-            }
-        });
-
-        this.connectionService = ApplicationManager.getApplication().getService(ArtemisConnectionService.class);
 
         // Try to parse the grading config once from storage
         getGradingConfigDTO(false);
@@ -93,34 +62,30 @@ public final class ProjectState {
     }
 
     /**
-     * Registers a listener that is called when the grading config changes.
+     * Registers a listener that is called when the grading config or exercise changes.
      * <p>
-     * This is used to update the UI when the grading config changes.
+     * This is used to update the UI when the grading config or exercise changes.
      *
      * @param listener the listener to be called
      */
-    public void registerGradingConfigChangedListener(
-            Consumer<GradingConfig.GradingConfigDTO> listener, Disposable parentDisposable) {
-        this.gradingConfigChangedListeners.add(listener);
-        Disposer.register(parentDisposable, () -> this.gradingConfigChangedListeners.remove(listener));
+    public void subscribe(Disposable parentDisposable, ExerciseListener listener) {
+        project.getMessageBus().connect(parentDisposable).subscribe(ExerciseListener.TOPIC, listener);
+
         if (this.cachedGradingConfigDTO != null) {
             // If the grading config is already loaded, call the listener immediately
-            listener.accept(this.cachedGradingConfigDTO);
+            listener.configChanged(this.cachedGradingConfigDTO);
         }
+
+        listener.exerciseChanged(this.activeExercise);
     }
 
-    public void registerExerciseSelectedListener(Consumer<ProgrammingExercise> listener, Disposable parentDisposable) {
-        this.exerciseSelectedListeners.add(listener);
-        Disposer.register(parentDisposable, () -> this.exerciseSelectedListeners.remove(listener));
-        listener.accept(this.activeExercise);
-    }
-
+    // TODO: This should move to AssessmentTracker
     public boolean isAssessing() {
-        return activeAssessment != null;
+        return AssessmentTracker.getInstance(project).getActiveAssessment() != null;
     }
-
-    public boolean hasActiveAssessment() {
-        return isAssessing();
+    // TODO: This should move to AssessmentTracker
+    public Optional<ActiveAssessment> getActiveAssessment() {
+        return Optional.ofNullable(AssessmentTracker.getInstance(project).getActiveAssessment());
     }
 
     public void startNextAssessment(CorrectionRound correctionRound) {
@@ -151,42 +116,6 @@ public final class ProjectState {
                 .queue(correctionRound, gradingConfig.get(), activeExercise, submission);
     }
 
-    public void saveAssessment() {
-        if (!isAssessing()) {
-            ArtemisUtils.displayNoAssessmentBalloon();
-            return;
-        }
-
-        EndAssessmentService.getInstance(project).queue(SubmitAction.SAVE);
-    }
-
-    public void submitAssessment() {
-        if (!isAssessing()) {
-            ArtemisUtils.displayNoAssessmentBalloon();
-            return;
-        }
-
-        EndAssessmentService.getInstance(project).queue(SubmitAction.SUBMIT);
-    }
-
-    public void cancelAssessment() {
-        if (!isAssessing()) {
-            ArtemisUtils.displayNoAssessmentBalloon();
-            return;
-        }
-
-        EndAssessmentService.getInstance(project).queue(SubmitAction.CANCEL);
-    }
-
-    public void closeAssessment() {
-        if (!isAssessing()) {
-            ArtemisUtils.displayNoAssessmentBalloon();
-            return;
-        }
-
-        EndAssessmentService.getInstance(project).queue(SubmitAction.CLOSE);
-    }
-
     public void reopenAssessment(PackedAssessment assessment) {
         if (isAssessing()) {
             ArtemisUtils.displayFinishAssessmentFirstBalloon();
@@ -206,9 +135,50 @@ public final class ProjectState {
         ReopenAssessmentService.getInstance(project).queue(assessment, gradingConfig.get());
     }
 
+    public void updateAssessmentState(SubmitAction action) {
+        if (!isAssessing()) {
+            ArtemisUtils.displayNoAssessmentBalloon();
+            return;
+        }
+
+        EndAssessmentService.getInstance(project).queue(action);
+    }
+
     public void setSelectedGradingConfigPath(String path) {
         ArtemisSettingsState.getInstance().setSelectedGradingConfigPath(path);
         this.cachedGradingConfigDTO = null;
+    }
+
+    private void notifyGradingConfigChanged() {
+        var gradingConfigDTO = this.cachedGradingConfigDTO;
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (project.isDisposed()) {
+                return;
+            }
+
+            // Skip outdated notifications
+            if (gradingConfigDTO != this.cachedGradingConfigDTO) {
+                return;
+            }
+
+            project.getMessageBus().syncPublisher(ExerciseListener.TOPIC).configChanged(gradingConfigDTO);
+        });
+    }
+
+    private void notifyExerciseChanged() {
+        var exercise = this.activeExercise;
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (project.isDisposed()) {
+                return;
+            }
+
+            // Skip outdated notifications
+            if (exercise != this.activeExercise) {
+                return;
+            }
+
+            project.getMessageBus().syncPublisher(ExerciseListener.TOPIC).exerciseChanged(exercise);
+        });
     }
 
     public Optional<GradingConfig.GradingConfigDTO> getGradingConfigDTO(boolean required) {
@@ -222,12 +192,16 @@ public final class ProjectState {
             }
 
             try {
-                var fileContent = Files.readString(Path.of(gradingConfigPath));
+                var gradingConfigFile =
+                        LocalFileSystem.getInstance().refreshAndFindFileByNioFile(Path.of(gradingConfigPath));
+                if (gradingConfigFile == null) {
+                    throw new IOException("Grading config file not found: " + gradingConfigPath);
+                }
+
+                var fileContent = VfsUtilCore.loadText(gradingConfigFile);
                 this.cachedGradingConfigDTO = GradingConfig.readDTOFromString(fileContent);
 
-                for (var listener : this.gradingConfigChangedListeners) {
-                    listener.accept(this.cachedGradingConfigDTO);
-                }
+                this.notifyGradingConfigChanged();
             } catch (IOException | InvalidGradingConfigException e) {
                 if (required) {
                     LOG.warn(e);
@@ -240,11 +214,9 @@ public final class ProjectState {
     }
 
     public boolean hasReviewConfig() {
-        var gradingConfigDTO = this.getGradingConfigDTO(false);
-        if (gradingConfigDTO.isEmpty()) {
-            return false;
-        }
-        return gradingConfigDTO.get().review();
+        return this.getGradingConfigDTO(false)
+                .map(GradingConfig.GradingConfigDTO::review)
+                .orElse(false);
     }
 
     public Optional<ProgrammingExercise> getActiveExercise() {
@@ -253,37 +225,11 @@ public final class ProjectState {
 
     public void setActiveExercise(ProgrammingExercise exercise) {
         this.activeExercise = exercise;
-        for (var listener : this.exerciseSelectedListeners) {
-            listener.accept(exercise);
-        }
-    }
-
-    public Optional<ActiveAssessment> getActiveAssessment() {
-        return Optional.ofNullable(activeAssessment);
-    }
-
-    public User getAssessor() throws ArtemisNetworkException {
-        return connectionService.getAssessor();
-    }
-
-    public void registerAssessmentStartedListener(Consumer<ActiveAssessment> listener, Disposable parentDisposable) {
-        this.assessmentStartedListeners.add(listener);
-        Disposer.register(parentDisposable, () -> this.assessmentStartedListeners.remove(listener));
-        if (this.isAssessing()) {
-            listener.accept(activeAssessment);
-        }
-    }
-
-    public void registerAssessmentClosedListener(Runnable listener, Disposable parentDisposable) {
-        this.assessmentClosedListeners.add(listener);
-        Disposer.register(parentDisposable, () -> this.assessmentClosedListeners.remove(listener));
+        this.notifyExerciseChanged();
     }
 
     private void onInvalidGradingConfig(String message) {
         ArtemisUtils.displayGenericErrorBalloon("No/invalid grading config", message);
-        for (Runnable missingGradingConfigListener : this.missingGradingConfigListeners) {
-            missingGradingConfigListener.run();
-        }
     }
 
     private Optional<GradingConfig> createGradingConfig() {
@@ -324,23 +270,40 @@ public final class ProjectState {
     }
 
     public void setupProjectProfile() {
-        Path path = Path.of(
-                project.getBasePath(), Project.DIRECTORY_STORE_FOLDER, "inspectionProfiles", "Project_Default.xml");
-
         try {
-            // create the directory if it does not exist
-            Files.createDirectories(path.getParent());
-            // write the default profile to the file
-            Files.writeString(path, loadInspectionsProfile());
+            var profileContent = loadInspectionsProfile();
+
+            WriteAction.runAndWait(() -> {
+                try {
+                    var baseDirectory = ProjectUtil.guessProjectDir(project);
+                    if (baseDirectory == null) {
+                        throw new IOException("Project base directory is not available");
+                    }
+
+                    var profileDirectory = VfsUtil.createDirectories(
+                            baseDirectory.getPath() + "/" + Project.DIRECTORY_STORE_FOLDER + "/inspectionProfiles");
+                    var profileFile = profileDirectory.findOrCreateChildData(this, "Project_Default.xml");
+                    VfsUtil.saveText(profileFile, profileContent);
+                } catch (IOException ioException) {
+                    throw new UncheckedIOException(ioException);
+                }
+            });
         } catch (IOException ioException) {
             throw new IllegalStateException("Could not write default profile", ioException);
+        } catch (UncheckedIOException ioException) {
+            throw new IllegalStateException("Could not write default profile", ioException.getCause());
         }
     }
 
-    public Path getAnnotationPath(Annotation annotation) {
-        return getProjectRootDirectory()
-                .resolve(ActiveAssessment.ASSIGNMENT_SUB_PATH)
-                .resolve(annotation.getFilePath().replace("\\", "/"));
+    public Optional<VirtualFile> findAnnotationVirtualFile(Annotation annotation) {
+        var baseDirectory = ProjectUtil.guessProjectDir(project);
+        if (baseDirectory == null) {
+            return Optional.empty();
+        }
+
+        var relativePath = ActiveAssessment.ASSIGNMENT_SUB_PATH + "/"
+                + annotation.getFilePath().replace("\\", "/");
+        return Optional.ofNullable(baseDirectory.findFileByRelativePath(relativePath));
     }
 
     public static String colorToCSS(Color color) {

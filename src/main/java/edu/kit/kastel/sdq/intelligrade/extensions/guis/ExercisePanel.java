@@ -45,7 +45,12 @@ import edu.kit.kastel.sdq.artemis4j.grading.Course;
 import edu.kit.kastel.sdq.artemis4j.grading.Exam;
 import edu.kit.kastel.sdq.artemis4j.grading.PackedAssessment;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingExercise;
+import edu.kit.kastel.sdq.artemis4j.grading.penalty.GradingConfig;
+import edu.kit.kastel.sdq.intelligrade.AssessmentTracker;
+import edu.kit.kastel.sdq.intelligrade.SubmitAction;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
+import edu.kit.kastel.sdq.intelligrade.listeners.AssessmentStateListener;
+import edu.kit.kastel.sdq.intelligrade.listeners.ExerciseListener;
 import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment;
 import edu.kit.kastel.sdq.intelligrade.state.ArtemisConnectionService;
 import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
@@ -54,6 +59,7 @@ import edu.kit.kastel.sdq.intelligrade.widgets.FlowWrapLayout;
 import edu.kit.kastel.sdq.intelligrade.widgets.TextBuilder;
 import net.miginfocom.swing.MigLayout;
 import org.jspecify.annotations.NonNull;
+import org.jspecify.annotations.Nullable;
 
 public class ExercisePanel extends SimpleToolWindowPanel {
     private static final Logger LOG = Logger.getInstance(ExercisePanel.class);
@@ -80,7 +86,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
     private JTextComponent totalStatisticsLabel;
     private JTextComponent userStatisticsLabel;
 
-    private JPanel assessmentOrReviewPanel;
+    private final JPanel assessmentOrReviewPanel;
 
     private JPanel assessmentPanel;
     private JButton submitAssessmentButton;
@@ -112,7 +118,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
         this.parentToolWindow = toolWindow;
         this.project = project;
-        this.projectState = project.getService(ProjectState.class);
+        this.projectState = ProjectState.getInstance(project);
         this.connectionService = ApplicationManager.getApplication().getService(ArtemisConnectionService.class);
 
         connectedLabel = TextBuilder.immutable("")
@@ -171,12 +177,25 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
         this.connectionService.listenForChange(this::handleConnectionChange, parentDisposable);
 
-        this.projectState.registerAssessmentStartedListener(this::handleAssessmentStarted, parentDisposable);
+        AssessmentTracker.getInstance(project).subscribe(parentDisposable, new AssessmentStateListener() {
+            @Override
+            public void activeAssessmentChanged(@Nullable ActiveAssessment assessment) {
+                updateAvailableActions();
 
-        this.projectState.registerAssessmentClosedListener(this::handleAssessmentClosed, parentDisposable);
+                // We don't want the grading config to change while an assessment is in progress
+                gradingConfigPathInput.setEnabled(assessment == null);
 
-        this.projectState.registerGradingConfigChangedListener(
-                gradingConfigDTO -> this.handleGradingConfigChanged(), parentDisposable);
+                updateBacklogAndStats();
+            }
+        });
+
+        this.projectState.subscribe(parentDisposable, new ExerciseListener() {
+            @Override
+            public void configChanged(GradingConfig.@NonNull GradingConfigDTO config) {
+                updateAvailableActions();
+                updateBacklogAndStats();
+            }
+        });
     }
 
     private void createGeneralPanel() {
@@ -260,40 +279,40 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
         submitAssessmentButton = createWrappingButton("Submit Assessment");
         submitAssessmentButton.setForeground(JBColor.GREEN);
-        submitAssessmentButton.addActionListener(a -> this.projectState.submitAssessment());
+        submitAssessmentButton.addActionListener(_ -> this.projectState.updateAssessmentState(SubmitAction.SUBMIT));
         assessmentPanel.add(submitAssessmentButton, "grow");
 
         cancelAssessmentButton = createWrappingButton("Cancel Assessment");
         cancelAssessmentButton.setEnabled(false);
-        cancelAssessmentButton.addActionListener(a -> {
+        cancelAssessmentButton.addActionListener(_ -> {
             var confirmed = MessageDialogBuilder.okCancel(
                             "Cancel Assessment?", "Your assessment will be discarded, and the lock will be freed.")
                     .guessWindowAndAsk();
 
             if (confirmed) {
-                this.projectState.cancelAssessment();
+                this.projectState.updateAssessmentState(SubmitAction.CANCEL);
             }
         });
         assessmentPanel.add(cancelAssessmentButton, "grow");
 
         saveAssessmentButton = createWrappingButton("Save Assessment");
-        saveAssessmentButton.addActionListener(a -> this.projectState.saveAssessment());
+        saveAssessmentButton.addActionListener(a -> this.projectState.updateAssessmentState(SubmitAction.SAVE));
         assessmentPanel.add(saveAssessmentButton, "grow");
 
         closeAssessmentButton = createWrappingButton("Close Assessment");
-        closeAssessmentButton.addActionListener(a -> {
+        closeAssessmentButton.addActionListener(_ -> {
             var confirmed = MessageDialogBuilder.okCancel(
                             "Close Assessment?", "Your will loose any unsaved progress, but you will keep the lock.")
                     .guessWindowAndAsk();
 
             if (confirmed) {
-                this.projectState.closeAssessment();
+                this.projectState.updateAssessmentState(SubmitAction.CLOSE);
             }
         });
         assessmentPanel.add(closeAssessmentButton, "grow");
 
         reRunAutograder = createWrappingButton("Re-run Autograder");
-        reRunAutograder.addActionListener(a -> {
+        reRunAutograder.addActionListener(_ -> {
             var confirmed = MessageDialogBuilder.okCancel(
                             "Re-Run Autograder?", "This may create duplicate annotations!")
                     .guessWindowAndAsk();
@@ -311,16 +330,16 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
         submitReviewButton = createWrappingButton("Submit Review");
         submitReviewButton.setForeground(JBColor.GREEN);
-        submitReviewButton.addActionListener(a -> this.projectState.submitAssessment());
+        submitReviewButton.addActionListener(a -> this.projectState.updateAssessmentState(SubmitAction.SUBMIT));
         reviewPanel.add(submitReviewButton, "grow");
 
         cancelReviewButton = createWrappingButton("Cancel Review");
-        cancelReviewButton.addActionListener(a -> {
+        cancelReviewButton.addActionListener(_ -> {
             var confirmed = MessageDialogBuilder.okCancel("Cancel Review?", "Your review will be discarded.")
                     .guessWindowAndAsk();
 
             if (confirmed) {
-                this.projectState.closeAssessment();
+                this.projectState.updateAssessmentState(SubmitAction.CANCEL);
             }
         });
         reviewPanel.add(cancelReviewButton, "grow");
@@ -524,7 +543,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
         if (connection != null) {
             // When a connection is established, update the course selector with the courses of the connection
             try {
-                connectedLabel.setText("\u2714 Connected to "
+                connectedLabel.setText("✔ Connected to "
                         + connection.getClient().getInstance().getDomain() + " as "
                         + connection.getAssessor().getLogin());
                 connectedLabel.setForeground(JBColor.GREEN);
@@ -536,32 +555,12 @@ public class ExercisePanel extends SimpleToolWindowPanel {
                 ArtemisUtils.displayNetworkErrorBalloon("Failed to fetch course info", ex);
             }
         } else {
-            connectedLabel.setText("\u274C Not connected");
+            connectedLabel.setText("❌ Not connected");
             connectedLabel.setForeground(JBColor.RED);
         }
 
         updateAvailableActions();
         updateUI();
-    }
-
-    private void handleGradingConfigChanged() {
-        updateAvailableActions();
-        updateBacklogAndStats();
-    }
-
-    private void handleAssessmentStarted(ActiveAssessment assessment) {
-        updateAvailableActions();
-
-        // We don't want the grading config to change while an assessment is in progress
-        gradingConfigPathInput.setEnabled(false);
-
-        updateBacklogAndStats();
-    }
-
-    private void handleAssessmentClosed() {
-        updateAvailableActions();
-        gradingConfigPathInput.setEnabled(true);
-        updateBacklogAndStats();
     }
 
     private void updateBacklogAndStats() {
@@ -642,7 +641,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
         }
 
         @Override
-        public String toString() {
+        public @NonNull String toString() {
             return exam == null ? "<No Exam>" : exam.toString();
         }
     }

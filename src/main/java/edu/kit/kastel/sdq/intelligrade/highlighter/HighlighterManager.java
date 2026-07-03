@@ -46,12 +46,15 @@ import com.intellij.ui.AnActionButton;
 import com.intellij.util.concurrency.AppExecutorUtil;
 import edu.kit.kastel.sdq.artemis4j.grading.Annotation;
 import edu.kit.kastel.sdq.artemis4j.grading.penalty.MistakeType;
+import edu.kit.kastel.sdq.intelligrade.AssessmentTracker;
 import edu.kit.kastel.sdq.intelligrade.extensions.settings.ArtemisSettingsState;
 import edu.kit.kastel.sdq.intelligrade.icons.ArtemisIcons;
+import edu.kit.kastel.sdq.intelligrade.listeners.AssessmentStateListener;
 import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment;
 import edu.kit.kastel.sdq.intelligrade.state.AnnotationSelectionService;
 import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import org.jspecify.annotations.NonNull;
+import org.jspecify.annotations.Nullable;
 
 /**
  * This class manages the highlights (the colored lines that indicate an annotation) in the editor.
@@ -114,21 +117,25 @@ public final class HighlighterManager implements Disposable {
                     }
                 });
 
-        ProjectState.getInstance(project)
-                .registerAssessmentStartedListener(
-                        assessment -> assessment.registerAnnotationsUpdatedListener(
-                                annotations -> updateHighlightersForAllEditors()),
-                        this);
+        AssessmentTracker.getInstance(project).subscribe(this, new AssessmentStateListener() {
+            @Override
+            public void activeAssessmentChanged(@Nullable ActiveAssessment assessment) {
+                if (assessment == null) {
+                    // When an assessment is closed, clear everything
+                    clearAllHighlighters();
+                    restoreDocumentReadOnlyStates();
+                    cancelLastPopup();
+                } else {
+                    updateHighlightersForAllEditors();
+                }
+            }
 
-        // When an assessment is closed, clear everything
-        ProjectState.getInstance(project)
-                .registerAssessmentClosedListener(
-                        () -> {
-                            clearAllHighlighters();
-                            restoreDocumentReadOnlyStates();
-                            cancelLastPopup();
-                        },
-                        this);
+            @Override
+            public void annotationsChanged(
+                    @NonNull ActiveAssessment assessment, @NonNull List<Annotation> annotations) {
+                updateHighlightersForAllEditors();
+            }
+        });
     }
 
     @Override
@@ -195,7 +202,7 @@ public final class HighlighterManager implements Disposable {
             return;
         }
 
-        var highlighterRequests = ReadAction.compute(() -> createHighlighterRequests(editor, annotations));
+        var highlighterRequests = ReadAction.computeBlocking(() -> createHighlighterRequests(editor, annotations));
         if (highlighterRequests.isEmpty()) {
             return;
         }
@@ -211,10 +218,6 @@ public final class HighlighterManager implements Disposable {
                             request.attributes(),
                             request.targetArea()));
             highlightedAnnotations.add(request.annotation());
-        }
-
-        if (highlighters.isEmpty()) {
-            return;
         }
 
         // use the first highlighter for the gutter icon
@@ -317,7 +320,7 @@ public final class HighlighterManager implements Disposable {
     }
 
     private void updateHighlightersForEditor(Editor editor) {
-        var filePath = ReadAction.compute(() -> getLocalEditorFilePath(editor));
+        var filePath = ReadAction.computeBlocking(() -> getLocalEditorFilePath(editor));
         if (filePath.isEmpty()) {
             return;
         }

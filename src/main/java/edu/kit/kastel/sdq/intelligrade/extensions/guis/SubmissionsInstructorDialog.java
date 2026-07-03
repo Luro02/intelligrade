@@ -30,6 +30,7 @@ import edu.kit.kastel.sdq.artemis4j.grading.PackedAssessment;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingExercise;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingSubmission;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingSubmissionWithResults;
+import edu.kit.kastel.sdq.intelligrade.listeners.ExerciseListener;
 import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils;
 import net.miginfocom.swing.MigLayout;
@@ -57,8 +58,13 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
         this.setTitle("All Submissions");
         this.setModal(false);
         this.init();
-        this.projectState = project.getService(ProjectState.class);
-        this.projectState.registerExerciseSelectedListener(this::fetchSubmissions, getDisposable());
+        this.projectState = ProjectState.getInstance(project);
+        this.projectState.subscribe(getDisposable(), new ExerciseListener() {
+            @Override
+            public void exerciseChanged(@Nullable ProgrammingExercise exercise) {
+                fetchSubmissions(exercise);
+            }
+        });
     }
 
     @Override
@@ -110,7 +116,7 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
         return new Action[] {this.myCancelAction};
     }
 
-    private void fetchSubmissions(ProgrammingExercise exercise) {
+    private void fetchSubmissions(@Nullable ProgrammingExercise exercise) {
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             if (exercise != null) {
                 try {

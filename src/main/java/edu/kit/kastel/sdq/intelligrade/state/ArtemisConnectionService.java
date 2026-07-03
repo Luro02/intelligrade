@@ -62,7 +62,7 @@ public final class ArtemisConnectionService {
         return Arrays.stream(ProjectManager.getInstance().getOpenProjects())
                 .filter(project -> !project.isDisposed())
                 .map(ProjectState::getInstance)
-                .anyMatch(ProjectState::hasActiveAssessment);
+                .anyMatch(ProjectState::isAssessing);
     }
 
     private void clearProjectStates() {

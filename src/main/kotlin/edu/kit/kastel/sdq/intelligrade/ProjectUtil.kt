@@ -4,37 +4,30 @@ import com.intellij.openapi.application.readAction
 import com.intellij.openapi.application.writeAction
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.guessProjectDir
 import com.intellij.openapi.projectRoots.ProjectJdkTable
 import com.intellij.openapi.projectRoots.Sdk
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.lang.JavaVersion
-import edu.kit.kastel.sdq.intelligrade.state.ProjectState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.nio.file.Path
 import java.util.function.Function
 
 private val LOG = logger<ProjectUtil>()
 
 object ProjectUtil {
-    suspend fun getProjectRootVirtualFile(project: Project): VirtualFile? {
-        val rootDirectory = Path.of(project.basePath!!)
-
-        return withContext(Dispatchers.IO) {
-            VfsUtil.findFile(rootDirectory, true)
+    suspend fun getProjectRootVirtualFile(project: Project): VirtualFile? =
+        withContext(Dispatchers.IO) {
+            project.guessProjectDir()?.also { it.refresh(false, false) }
         }
-    }
 
     suspend fun forceFilesSync(project: Project) =
         coroutineScope {
-            val rootVirtualFile =
-                withContext(Dispatchers.IO) {
-                    VfsUtil.findFileByIoFile(ProjectState.getInstance(project).getProjectRootDirectory().toFile(), true)
-                }
+            val rootVirtualFile = getProjectRootVirtualFile(project)
             if (rootVirtualFile == null) {
                 LOG.warn("Root virtual file is null, cannot force files sync")
                 return@coroutineScope
