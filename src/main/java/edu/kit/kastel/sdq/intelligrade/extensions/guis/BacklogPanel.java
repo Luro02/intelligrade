@@ -1,9 +1,9 @@
 /* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.extensions.guis;
 
-import java.awt.event.ActionEvent;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
@@ -16,13 +16,27 @@ import javax.swing.event.DocumentEvent;
 import javax.swing.text.JTextComponent;
 
 import com.intellij.icons.AllIcons;
+import com.intellij.openapi.Disposable;
+import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.MessageType;
+import com.intellij.openapi.wm.ToolWindowManager;
 import com.intellij.ui.DocumentAdapter;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.SearchTextField;
 import com.intellij.ui.components.JBPanel;
 import com.intellij.ui.components.JBRadioButton;
+import com.intellij.util.concurrency.annotations.RequiresEdt;
+import edu.kit.kastel.sdq.artemis4j.ArtemisNetworkException;
 import edu.kit.kastel.sdq.artemis4j.grading.CorrectionRound;
 import edu.kit.kastel.sdq.artemis4j.grading.PackedAssessment;
+import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingExercise;
+import edu.kit.kastel.sdq.artemis4j.grading.penalty.GradingConfig;
+import edu.kit.kastel.sdq.intelligrade.AssessmentTracker;
+import edu.kit.kastel.sdq.intelligrade.listeners.AssessmentStateListener;
+import edu.kit.kastel.sdq.intelligrade.listeners.ExerciseListener;
+import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment;
 import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils;
 import edu.kit.kastel.sdq.intelligrade.widgets.FlowHideLayout;
@@ -30,23 +44,26 @@ import edu.kit.kastel.sdq.intelligrade.widgets.FlowWrapLayout;
 import edu.kit.kastel.sdq.intelligrade.widgets.TextBuilder;
 import net.miginfocom.swing.MigLayout;
 import org.jspecify.annotations.NonNull;
+import org.jspecify.annotations.Nullable;
 
 public class BacklogPanel extends JPanel {
+    private static final Logger LOG = Logger.getInstance(BacklogPanel.class);
+
     private static final String SHOWN_SUBMISSIONS_TEXT = "Showing %d/%d";
 
+    private final Project project;
     private final SearchTextField searchField;
-    private CorrectionRound selectedRound;
+    private CorrectionRound selectedRound = CorrectionRound.FIRST;
     private final ButtonGroup buttonGroup;
     private final JTextComponent shownSubmissionsLabel;
     private final JPanel backlogList;
-    private final ProjectState projectState;
 
     private List<PackedAssessment> lastFetchedAssessments = new ArrayList<>();
-    private final List<Runnable> onBacklogUpdate = new ArrayList<>();
+    private boolean reviewMode;
 
-    public BacklogPanel(ProjectState projectState) {
+    BacklogPanel(Disposable parentDisposable, Project project) {
         super(new MigLayout("wrap 1", "[grow]"));
-        this.projectState = projectState;
+        this.project = project;
 
         // The text search field is supposed to grow
         var filterPanel = new JBPanel<>(new FlowWrapLayout(List.of(
@@ -72,7 +89,7 @@ public class BacklogPanel extends JPanel {
         this.searchField.addDocumentListener(new DocumentAdapter() {
             @Override
             protected void textChanged(@NonNull DocumentEvent documentEvent) {
-                updateBacklog();
+                reloadBacklogUI();
             }
         });
 
@@ -84,9 +101,9 @@ public class BacklogPanel extends JPanel {
             if (correctionRound == CorrectionRound.FIRST) {
                 button.setSelected(true);
             }
-            button.addActionListener(a -> {
+            button.addActionListener(_ -> {
                 this.selectedRound = correctionRound;
-                updateBacklog();
+                reloadBacklogUI();
             });
             this.buttonGroup.add(button);
             filterPanel.add(button);
@@ -96,8 +113,30 @@ public class BacklogPanel extends JPanel {
         this.add(this.backlogList, "grow");
 
         var refreshButton = new JButton(AllIcons.Actions.Refresh);
-        refreshButton.addActionListener(this::refreshButtonClicked);
+        refreshButton.addActionListener(_ -> this.refresh());
         this.add(refreshButton, "alignx right");
+
+        ProjectState.getInstance(project).subscribe(parentDisposable, new ExerciseListener() {
+            // The backlog panel has to be updated after an exercise changes:
+            @Override
+            public void exerciseChanged(@Nullable ProgrammingExercise exercise) {
+                refresh();
+            }
+
+            @Override
+            public void configChanged(GradingConfig.@Nullable GradingConfigDTO config) {
+                reviewMode = config != null && config.review();
+                reloadBacklogUI();
+            }
+        });
+
+        // If an assessment is started or closed, backlog has to be updated to reflect that:
+        AssessmentTracker.getInstance(project).subscribe(parentDisposable, new AssessmentStateListener() {
+            @Override
+            public void activeAssessmentChanged(@Nullable ActiveAssessment assessment) {
+                refresh();
+            }
+        });
     }
 
     private static int getRoundNumber(CorrectionRound round) {
@@ -115,26 +154,43 @@ public class BacklogPanel extends JPanel {
         };
     }
 
-    private void refreshButtonClicked(ActionEvent actionEvent) {
-        for (Runnable runnable : this.onBacklogUpdate) {
-            runnable.run();
-        }
+    private void refresh() {
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            if (ProjectState.getInstance(project).getActiveExercise().isEmpty()) {
+                return;
+            }
+
+            var exercise = ProjectState.getInstance(project).getActiveExercise().orElseThrow();
+
+            List<PackedAssessment> assessments;
+
+            try {
+                assessments = exercise.fetchMyAssessments();
+            } catch (ArtemisNetworkException ex) {
+                LOG.warn(ex);
+                ArtemisUtils.displayNetworkErrorBalloon("Failed to fetch backlog", ex);
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    this.backlogList.removeAll();
+                    this.updateUI();
+                });
+                return;
+            }
+
+            updateAssessments(assessments, exercise);
+        });
     }
 
-    public void addBacklogUpdateListener(Runnable listener) {
-        this.onBacklogUpdate.add(listener);
-    }
-
-    public void setAssessments(List<PackedAssessment> assessments) {
-        this.lastFetchedAssessments = new ArrayList<>(assessments);
+    private void updateAssessments(List<PackedAssessment> assessments, @NonNull ProgrammingExercise exercise) {
+        var fetchedAssessments = new ArrayList<>(assessments);
         // Sort by submission date, which matches the ordering in the Artemis backlog
-        this.lastFetchedAssessments.sort(
-                Comparator.comparing(a -> a.submission().getSubmissionDate()));
-        if (!this.lastFetchedAssessments.isEmpty()) {
+        fetchedAssessments.sort(Comparator.comparing(a -> a.submission().getSubmissionDate()));
+
+        CorrectionRound roundToSelect = null;
+        if (!fetchedAssessments.isEmpty()) {
             // The first one will be the oldest date, and the last one the newest date.
             //
             // Find the last assessment that has been submitted:
-            var latestSubmission = this.lastFetchedAssessments.stream()
+            var latestSubmission = fetchedAssessments.stream()
                     // If the assessment has not been submitted, it has no completion date -> skip these
                     .filter(PackedAssessment::isSubmitted)
                     // This shouldn't be necessary, but just to be safe:
@@ -144,35 +200,55 @@ public class BacklogPanel extends JPanel {
                     .max(Comparator.comparing(
                             packedAssessment -> packedAssessment.result().completionDate()))
                     // This can happen if no assessment has been submitted yet
-                    .orElse(this.lastFetchedAssessments.getFirst());
-
-            int number = getRoundNumber(latestSubmission.round());
-            this.buttonGroup.clearSelection();
-
-            int i = 1;
-            for (var e = this.buttonGroup.getElements(); e.hasMoreElements(); ) {
-                var button = e.nextElement();
-                if (i == number) {
-                    button.setSelected(true);
-                    this.selectedRound = latestSubmission.round();
-                    break;
-                }
-                i += 1;
-            }
+                    .orElse(fetchedAssessments.getFirst());
+            roundToSelect = latestSubmission.round();
         }
 
-        this.updateBacklog();
+        var selectedRoundFromFetch = roundToSelect;
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (project.isDisposed()) {
+                return;
+            }
+
+            this.lastFetchedAssessments = fetchedAssessments;
+            selectRound(selectedRoundFromFetch);
+
+            // Notify anyone interested that the assessments in the backlog have changed
+            project.getMessageBus()
+                    .syncPublisher(ExerciseListener.TOPIC)
+                    .assessmentsChanged(exercise, Collections.unmodifiableList(this.lastFetchedAssessments));
+
+            this.reloadBacklogUI();
+
+            // Tell the user that we've done something
+            ToolWindowManager.getInstance(project).notifyByBalloon("Artemis", MessageType.INFO, "Backlog updated");
+        });
     }
 
-    public void clear() {
-        this.backlogList.removeAll();
-        this.updateUI();
+    private void selectRound(@Nullable CorrectionRound round) {
+        if (round == null) {
+            return;
+        }
+
+        int number = getRoundNumber(round);
+        this.buttonGroup.clearSelection();
+
+        int i = 1;
+        for (var elements = this.buttonGroup.getElements(); elements.hasMoreElements(); i += 1) {
+            var button = elements.nextElement();
+            if (i == number) {
+                button.setSelected(true);
+                this.selectedRound = round;
+                break;
+            }
+        }
     }
 
-    private void updateBacklog() {
+    @RequiresEdt
+    private void reloadBacklogUI() {
         this.backlogList.removeAll();
 
-        if (projectState.hasReviewConfig()) {
+        if (this.reviewMode) {
             this.shownSubmissionsLabel.setText("Disabled");
             this.backlogList.add(
                     TextBuilder.immutable("No backlog in review mode").text());
@@ -211,7 +287,7 @@ public class BacklogPanel extends JPanel {
         this.backlogList.add(
                 TextBuilder.immutable(getRoundName(assessment.round())).text());
         this.backlogList.add(createScoreItem(assessment), "alignx right");
-        this.backlogList.add(createActionButton(assessment, this.projectState), "growx");
+        this.backlogList.add(createActionButton(assessment), "growx");
     }
 
     private static JComponent createResultDateLabel(PackedAssessment assessment) {
@@ -237,7 +313,7 @@ public class BacklogPanel extends JPanel {
         return TextBuilder.immutable(resultText).text();
     }
 
-    private static JButton createActionButton(PackedAssessment assessment, ProjectState projectState) {
+    private JButton createActionButton(PackedAssessment assessment) {
         // Action Button
         JButton reopenButton;
         if (assessment.isSubmitted()) {
@@ -246,7 +322,7 @@ public class BacklogPanel extends JPanel {
             reopenButton = new JButton("Continue");
             reopenButton.setForeground(JBColor.ORANGE);
         }
-        reopenButton.addActionListener(a -> projectState.reopenAssessment(assessment));
+        reopenButton.addActionListener(_ -> ProjectState.getInstance(project).reopenAssessment(assessment));
 
         return reopenButton;
     }

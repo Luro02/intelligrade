@@ -16,6 +16,7 @@ import com.intellij.openapi.Disposable;
 import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.SimpleToolWindowPanel;
@@ -26,6 +27,7 @@ import com.intellij.ui.ScrollPaneFactory;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBPanel;
 import com.intellij.ui.components.JBTextField;
+import com.intellij.util.concurrency.annotations.RequiresBackgroundThread;
 import edu.kit.kastel.sdq.artemis4j.ArtemisNetworkException;
 import edu.kit.kastel.sdq.artemis4j.grading.Annotation;
 import edu.kit.kastel.sdq.artemis4j.grading.ArtemisConnectionHolder;
@@ -186,6 +188,7 @@ public class AnnotationsListPanel extends SimpleToolWindowPanel {
         PopupHandler.installPopupMenu(table, group, "popup@AnnotationsListPanel");
     }
 
+    @RequiresBackgroundThread
     private String mapAssessor(UserIdentifier id) {
         return Optional.ofNullable(id)
                 .map(uid -> {
@@ -213,6 +216,19 @@ public class AnnotationsListPanel extends SimpleToolWindowPanel {
     }
 
     private void showDebugDialog(Annotation annotation) {
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            String creator = mapAssessor(annotation.getCreator().orElse(null));
+            String suppressor = mapAssessor(annotation.getSuppressor().orElse(null));
+
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (!project.isDisposed()) {
+                    showDebugDialog(annotation, creator, suppressor);
+                }
+            });
+        });
+    }
+
+    private void showDebugDialog(Annotation annotation, String creator, String suppressor) {
         var panel = new JBPanel<>(new MigLayout("wrap 2", "[] [grow]"));
 
         var location = annotation.getLocation();
@@ -227,10 +243,9 @@ public class AnnotationsListPanel extends SimpleToolWindowPanel {
                 Map.entry("Path", location.filePath()),
                 Map.entry("Start", location.start().toString()),
                 Map.entry("End", location.end().toString()),
-                Map.entry("Created By", mapAssessor(annotation.getCreator().orElse(null))),
+                Map.entry("Created By", creator),
                 Map.entry("Suppressed", annotation.isSuppressed() ? "Yes" : "No"),
-                Map.entry(
-                        "Suppressed By", mapAssessor(annotation.getSuppressor().orElse(null))),
+                Map.entry("Suppressed By", suppressor),
                 Map.entry("Classifiers", annotation.getClassifiers().toString()));
 
         for (var entry : data) {

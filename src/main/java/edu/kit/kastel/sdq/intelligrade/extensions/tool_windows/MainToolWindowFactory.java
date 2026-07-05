@@ -8,8 +8,8 @@ import com.intellij.openapi.wm.ToolWindow;
 import com.intellij.openapi.wm.ToolWindowFactory;
 import com.intellij.ui.content.Content;
 import com.intellij.ui.content.ContentFactory;
-import edu.kit.kastel.sdq.intelligrade.extensions.guis.AssessmentPanel;
 import edu.kit.kastel.sdq.intelligrade.extensions.guis.ExercisePanel;
+import edu.kit.kastel.sdq.intelligrade.extensions.guis.GradingPanel;
 import edu.kit.kastel.sdq.intelligrade.extensions.guis.TestCasePanel;
 import org.jspecify.annotations.NonNull;
 
@@ -28,7 +28,7 @@ public class MainToolWindowFactory implements ToolWindowFactory, DumbAware {
     private static Content createExerciseContent(@NonNull Project project, ToolWindow toolWindow) {
         var disposable = Disposer.newDisposable("IntelliGrade Exercise Panel");
         var content = ContentFactory.getInstance()
-                .createContent(new ExercisePanel(project, toolWindow, disposable), "Exercise", false);
+                .createContent(new ExercisePanel(disposable, project, toolWindow), "Exercise", false);
         content.setDisposer(disposable);
         return content;
     }
@@ -36,7 +36,7 @@ public class MainToolWindowFactory implements ToolWindowFactory, DumbAware {
     private static Content createGradingContent(@NonNull Project project) {
         var disposable = Disposer.newDisposable("IntelliGrade Grading Panel");
         var content =
-                ContentFactory.getInstance().createContent(new AssessmentPanel(disposable, project), "Grading", false);
+                ContentFactory.getInstance().createContent(new GradingPanel(disposable, project), "Grading", false);
         content.setDisposer(disposable);
         return content;
     }

@@ -23,6 +23,7 @@ import com.intellij.ui.SearchTextField;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBPanel;
 import com.intellij.ui.table.JBTable;
+import com.intellij.util.concurrency.annotations.RequiresEdt;
 import com.intellij.util.ui.JBFont;
 import edu.kit.kastel.sdq.artemis4j.ArtemisNetworkException;
 import edu.kit.kastel.sdq.artemis4j.grading.CorrectionRound;
@@ -90,7 +91,7 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
 
         var refreshButton = new JButton(AllIcons.Actions.Refresh);
         refreshButton.addActionListener(
-                a -> fetchSubmissions(this.projectState.getActiveExercise().orElse(null)));
+                _ -> fetchSubmissions(this.projectState.getActiveExercise().orElse(null)));
         searchPanel.add(refreshButton);
 
         panel.add(searchPanel, "growx");
@@ -118,20 +119,30 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
 
     private void fetchSubmissions(@Nullable ProgrammingExercise exercise) {
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            List<ProgrammingSubmissionWithResults> submissions;
             if (exercise != null) {
                 try {
-                    this.allSubmissions = exercise.fetchAllSubmissions();
+                    submissions = exercise.fetchAllSubmissions();
                 } catch (ArtemisNetworkException e) {
                     ArtemisUtils.displayNetworkErrorBalloon("Failed to fetch assessments", e);
+                    return;
                 }
             } else {
-                this.allSubmissions = List.of();
+                submissions = List.of();
             }
 
-            ApplicationManager.getApplication().invokeLater(this::updateShownSubmissions);
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (isDisposed() || projectState.getActiveExercise().orElse(null) != exercise) {
+                    return;
+                }
+
+                this.allSubmissions = submissions;
+                updateShownSubmissions();
+            });
         });
     }
 
+    @RequiresEdt
     private void updateShownSubmissions() {
         var submissions = this.allSubmissions.stream()
                 .filter(submission -> {
@@ -154,6 +165,7 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
         this.setSelectedSubmission(null);
     }
 
+    @RequiresEdt
     private void setSelectedSubmission(ProgrammingSubmissionWithResults submission) {
         statusPanel.removeAll();
 
@@ -184,9 +196,9 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
         statusPanel.add(studentPanel, "spanx 3, growx");
 
         // action button
-        boolean review = this.projectState.hasReviewConfig();
+        boolean hasReviewConfig = this.projectState.hasLoadedReviewConfig();
         JBLabel configInfo = new JBLabel();
-        if (review) {
+        if (hasReviewConfig) {
             configInfo.setText("You have a review config");
         } else {
             configInfo.setText("You have a regular config");
@@ -196,7 +208,7 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
         // correction rounds
         JPanel roundsPanel = new JBPanel<>(new MigLayout("wrap 3", "[grow, sg] [grow, sg] [grow, sg]", "[top, 250px]"));
 
-        boolean allowFirstRoundEdit = !review && !submission.isSecondRoundStarted();
+        boolean allowFirstRoundEdit = !hasReviewConfig && !submission.isSecondRoundStarted();
         roundsPanel.add(
                 buildRoundPanel(
                         submission.getFirstRoundAssessment(),
@@ -205,7 +217,7 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
                         submission.getSubmission()),
                 "grow");
         if (submission.getSubmission().getExercise().hasSecondCorrectionRound()) {
-            boolean allowSecondRoundEdit = !review && submission.isFirstRoundFinished();
+            boolean allowSecondRoundEdit = !hasReviewConfig && submission.isFirstRoundFinished();
             roundsPanel.add(
                     buildRoundPanel(
                             submission.getSecondRoundAssessment(),
@@ -214,7 +226,7 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
                             submission.getSubmission()),
                     "grow");
 
-            boolean allowReviewEdit = review && submission.isSecondRoundFinished();
+            boolean allowReviewEdit = hasReviewConfig && submission.isSecondRoundFinished();
             roundsPanel.add(
                     buildRoundPanel(
                             submission.getReviewAssessment(),
@@ -252,26 +264,27 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
             // TODO Also, we maybe don't want to show this confidential information to students in the review session
 
             // Action button
-            if (round != CorrectionRound.REVIEW) {
-                if (assessment.isSubmitted()) {
-                    actionButton = new JButton("Reopen");
-                    actionButton.setForeground(JBColor.GREEN);
-                } else {
-                    actionButton = new JButton("Continue");
-                    actionButton.setForeground(JBColor.ORANGE);
-                }
-            } else {
-                actionButton = new JButton("Review");
-                actionButton.setForeground(JBColor.GREEN);
+            String buttonName = "Continue";
+            var buttonColor = JBColor.ORANGE;
+
+            if (round == CorrectionRound.REVIEW) {
+                buttonName = "Review";
+                buttonColor = JBColor.GREEN;
+            } else if (assessment.isSubmitted()) {
+                buttonName = "Reopen";
+                buttonColor = JBColor.GREEN;
             }
-            actionButton.addActionListener(a -> {
+
+            actionButton = new JButton(buttonName);
+            actionButton.setForeground(buttonColor);
+            actionButton.addActionListener(_ -> {
                 this.close(OK_EXIT_CODE);
                 this.projectState.reopenAssessment(assessment);
             });
         } else {
             actionButton = new JButton("Start");
             actionButton.setForeground(JBColor.GREEN);
-            actionButton.addActionListener(a -> {
+            actionButton.addActionListener(_ -> {
                 this.close(OK_EXIT_CODE);
                 this.projectState.startAssessment(submission, round);
             });

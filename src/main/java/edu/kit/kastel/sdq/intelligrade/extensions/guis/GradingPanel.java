@@ -11,6 +11,7 @@ import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
 import java.awt.font.TextAttribute;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -59,7 +60,7 @@ import net.miginfocom.swing.MigLayout;
 import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.Nullable;
 
-public class AssessmentPanel extends SimpleToolWindowPanel {
+public class GradingPanel extends SimpleToolWindowPanel {
     private static final Locale LOCALE = DynamicBundle.getLocale();
     private static final int MINIMUM_WRAPPED_ASSESSMENT_BUTTON_WIDTH = 190;
 
@@ -67,9 +68,9 @@ public class AssessmentPanel extends SimpleToolWindowPanel {
     private final JBLabel pointsLabel;
     private final FlowWrapLayout.SharedSizeGroups assessmentButtonSizeGroups = new FlowWrapLayout.SharedSizeGroups();
     private final Map<RatingGroup, TitledSeparator> ratingGroupBorders = new IdentityHashMap<>();
-    private final List<AssessmentButton> assessmentButtons = new ArrayList<>();
+    private final Collection<AssessmentButton> assessmentButtons = new ArrayList<>();
 
-    public AssessmentPanel(Disposable parentDisposable, Project project) {
+    public GradingPanel(Disposable parentDisposable, Project project) {
         super(true, true);
 
         content = new ScrollablePanel(new MigLayout("wrap 1", "[grow]"));
