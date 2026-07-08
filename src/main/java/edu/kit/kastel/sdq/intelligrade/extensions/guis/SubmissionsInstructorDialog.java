@@ -25,7 +25,6 @@ import com.intellij.ui.components.JBPanel;
 import com.intellij.ui.table.JBTable;
 import com.intellij.util.concurrency.annotations.RequiresEdt;
 import com.intellij.util.ui.JBFont;
-import edu.kit.kastel.sdq.artemis4j.ArtemisNetworkException;
 import edu.kit.kastel.sdq.artemis4j.grading.CorrectionRound;
 import edu.kit.kastel.sdq.artemis4j.grading.PackedAssessment;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingExercise;
@@ -33,19 +32,20 @@ import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingSubmission;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingSubmissionWithResults;
 import edu.kit.kastel.sdq.intelligrade.listeners.ExerciseListener;
 import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
-import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils;
+import edu.kit.kastel.sdq.intelligrade.utils.LatestRequestRunner;
 import net.miginfocom.swing.MigLayout;
 import org.jetbrains.annotations.Nls;
 import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.Nullable;
 
-public class SubmissionsInstructorDialog extends DialogWrapper {
+public final class SubmissionsInstructorDialog extends DialogWrapper {
+    private final Project project;
+    private final LatestRequestRunner latestRequestRunner;
+
     private JPanel statusPanel;
     private SearchTextField searchField;
     private JBLabel shownSubmissionsLabel;
     private JBTable studentsTable;
-
-    private final ProjectState projectState;
 
     private List<ProgrammingSubmissionWithResults> allSubmissions = new ArrayList<>();
 
@@ -53,14 +53,16 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
         ApplicationManager.getApplication().invokeLater(() -> new SubmissionsInstructorDialog(project).show());
     }
 
-    public SubmissionsInstructorDialog(Project project) {
+    private SubmissionsInstructorDialog(Project project) {
         super(project);
+        this.project = project;
+        this.latestRequestRunner = new LatestRequestRunner(project);
 
         this.setTitle("All Submissions");
         this.setModal(false);
         this.init();
-        this.projectState = ProjectState.getInstance(project);
-        this.projectState.subscribe(getDisposable(), new ExerciseListener() {
+
+        ProjectState.getInstance(project).subscribe(getDisposable(), new ExerciseListener() {
             @Override
             public void exerciseChanged(@Nullable ProgrammingExercise exercise) {
                 fetchSubmissions(exercise);
@@ -69,7 +71,7 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
     }
 
     @Override
-    protected @Nullable JComponent createCenterPanel() {
+    protected @NonNull JComponent createCenterPanel() {
         var panel = new JBPanel<>(new MigLayout("wrap 1, fill", "[400px:400px]", "[] 20px [] [200px:null, grow]"));
 
         statusPanel = new JBPanel<>(new MigLayout("wrap 3", "[grow][grow][grow]", "[50px:50px] [] [80:80px]"));
@@ -90,8 +92,8 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
         searchPanel.add(shownSubmissionsLabel, "");
 
         var refreshButton = new JButton(AllIcons.Actions.Refresh);
-        refreshButton.addActionListener(
-                _ -> fetchSubmissions(this.projectState.getActiveExercise().orElse(null)));
+        refreshButton.addActionListener(_ -> fetchSubmissions(
+                ProjectState.getInstance(project).getActiveExercise().orElse(null)));
         searchPanel.add(refreshButton);
 
         panel.add(searchPanel, "growx");
@@ -99,7 +101,7 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
         this.studentsTable = new JBTable(new SubmissionsTableModel(List.of()));
         // this.studentsTable.setDefaultRenderer(Object.class, new SubmissionTableCellRenderer());
         studentsTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        studentsTable.getSelectionModel().addListSelectionListener(listSelectionEvent -> {
+        studentsTable.getSelectionModel().addListSelectionListener(_ -> {
             var selectedRow = studentsTable.getSelectedRow();
             if (selectedRow >= 0) {
                 var selectedSubmission =
@@ -118,28 +120,20 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
     }
 
     private void fetchSubmissions(@Nullable ProgrammingExercise exercise) {
-        ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            List<ProgrammingSubmissionWithResults> submissions;
-            if (exercise != null) {
-                try {
-                    submissions = exercise.fetchAllSubmissions();
-                } catch (ArtemisNetworkException e) {
-                    ArtemisUtils.displayNetworkErrorBalloon("Failed to fetch assessments", e);
-                    return;
-                }
-            } else {
-                submissions = List.of();
-            }
-
-            ApplicationManager.getApplication().invokeLater(() -> {
-                if (isDisposed() || projectState.getActiveExercise().orElse(null) != exercise) {
-                    return;
-                }
-
-                this.allSubmissions = submissions;
-                updateShownSubmissions();
-            });
-        });
+        this.latestRequestRunner
+                .fetchArtemis(() -> exercise == null
+                        ? new ArrayList<ProgrammingSubmissionWithResults>()
+                        : exercise.fetchAllSubmissions())
+                .withErrorNotification("Failed to fetch assessments")
+                .thenIf(
+                        () -> ProjectState.getInstance(project)
+                                        .getActiveExercise()
+                                        .orElse(null)
+                                == exercise,
+                        submissions -> {
+                            this.allSubmissions = submissions;
+                            updateShownSubmissions();
+                        });
     }
 
     @RequiresEdt
@@ -196,7 +190,7 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
         statusPanel.add(studentPanel, "spanx 3, growx");
 
         // action button
-        boolean hasReviewConfig = this.projectState.hasLoadedReviewConfig();
+        boolean hasReviewConfig = ProjectState.getInstance(project).hasLoadedReviewConfig();
         JBLabel configInfo = new JBLabel();
         if (hasReviewConfig) {
             configInfo.setText("You have a review config");
@@ -279,14 +273,14 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
             actionButton.setForeground(buttonColor);
             actionButton.addActionListener(_ -> {
                 this.close(OK_EXIT_CODE);
-                this.projectState.reopenAssessment(assessment);
+                ProjectState.getInstance(project).reopenAssessment(assessment);
             });
         } else {
             actionButton = new JButton("Start");
             actionButton.setForeground(JBColor.GREEN);
             actionButton.addActionListener(_ -> {
                 this.close(OK_EXIT_CODE);
-                this.projectState.startAssessment(submission, round);
+                ProjectState.getInstance(project).startAssessment(submission, round);
             });
         }
         actionButton.setEnabled(allowEdit);
@@ -301,10 +295,10 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
         this.repaint();
     }
 
-    private static class SubmissionsTableModel extends AbstractTableModel {
-        private List<ProgrammingSubmissionWithResults> submissions;
+    private static final class SubmissionsTableModel extends AbstractTableModel {
+        private List<? extends ProgrammingSubmissionWithResults> submissions;
 
-        public SubmissionsTableModel(List<ProgrammingSubmissionWithResults> submissions) {
+        private SubmissionsTableModel(List<? extends ProgrammingSubmissionWithResults> submissions) {
             this.submissions = submissions;
         }
 
@@ -333,7 +327,7 @@ public class SubmissionsInstructorDialog extends DialogWrapper {
             return submissions.get(i).getSubmission().getStudent().get().getLogin();
         }
 
-        public void setSubmissions(List<ProgrammingSubmissionWithResults> submissions) {
+        private void setSubmissions(List<? extends ProgrammingSubmissionWithResults> submissions) {
             this.submissions = submissions;
             fireTableDataChanged();
         }

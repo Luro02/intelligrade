@@ -17,6 +17,7 @@ import edu.kit.kastel.sdq.intelligrade.listeners.AssessmentStateListener;
 import edu.kit.kastel.sdq.intelligrade.listeners.ExerciseListener;
 import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment;
 import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
+import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtils;
 import edu.kit.kastel.sdq.intelligrade.widgets.FlowWrapLayout;
 import net.miginfocom.swing.MigLayout;
 import org.jspecify.annotations.Nullable;
@@ -85,12 +86,12 @@ class AssessmentActionsPanel extends JBPanel<AssessmentActionsPanel> {
     private JPanel createAssessmentPanel() {
         var panel = new JBPanel<>(new FlowWrapLayout(2));
 
-        submitAssessmentButton = ExercisePanel.createWrappingButton("Submit Assessment");
+        submitAssessmentButton = IntellijUtils.createWrappingButton("Submit Assessment");
         submitAssessmentButton.setForeground(JBColor.GREEN);
         submitAssessmentButton.addActionListener(_ -> submitAction(SubmitAction.SUBMIT));
         panel.add(submitAssessmentButton, "grow");
 
-        cancelAssessmentButton = ExercisePanel.createWrappingButton("Cancel Assessment");
+        cancelAssessmentButton = IntellijUtils.createWrappingButton("Cancel Assessment");
         cancelAssessmentButton.setEnabled(false);
         cancelAssessmentButton.addActionListener(_ -> {
             var confirmed = MessageDialogBuilder.okCancel(
@@ -103,11 +104,11 @@ class AssessmentActionsPanel extends JBPanel<AssessmentActionsPanel> {
         });
         panel.add(cancelAssessmentButton, "grow");
 
-        saveAssessmentButton = ExercisePanel.createWrappingButton("Save Assessment");
+        saveAssessmentButton = IntellijUtils.createWrappingButton("Save Assessment");
         saveAssessmentButton.addActionListener(_ -> submitAction(SubmitAction.SAVE));
         panel.add(saveAssessmentButton, "grow");
 
-        closeAssessmentButton = ExercisePanel.createWrappingButton("Close Assessment");
+        closeAssessmentButton = IntellijUtils.createWrappingButton("Close Assessment");
         closeAssessmentButton.addActionListener(_ -> {
             var confirmed = MessageDialogBuilder.okCancel(
                             "Close Assessment?", "Your will loose any unsaved progress, but you will keep the lock.")
@@ -119,7 +120,7 @@ class AssessmentActionsPanel extends JBPanel<AssessmentActionsPanel> {
         });
         panel.add(closeAssessmentButton, "grow");
 
-        reRunAutograderButton = ExercisePanel.createWrappingButton("Re-run Autograder");
+        reRunAutograderButton = IntellijUtils.createWrappingButton("Re-run Autograder");
         reRunAutograderButton.addActionListener(_ -> {
             var confirmed = MessageDialogBuilder.okCancel(
                             "Re-Run Autograder?", "This may create duplicate annotations!")
@@ -140,12 +141,12 @@ class AssessmentActionsPanel extends JBPanel<AssessmentActionsPanel> {
     private JPanel createReviewPanel() {
         var panel = new JBPanel<>(new MigLayout("wrap 1", "[grow]"));
 
-        submitReviewButton = ExercisePanel.createWrappingButton("Submit Review");
+        submitReviewButton = IntellijUtils.createWrappingButton("Submit Review");
         submitReviewButton.setForeground(JBColor.GREEN);
         submitReviewButton.addActionListener(_ -> submitAction(SubmitAction.SUBMIT));
         panel.add(submitReviewButton, "grow");
 
-        cancelReviewButton = ExercisePanel.createWrappingButton("Cancel Review");
+        cancelReviewButton = IntellijUtils.createWrappingButton("Cancel Review");
         cancelReviewButton.addActionListener(_ -> {
             var confirmed = MessageDialogBuilder.okCancel("Cancel Review?", "Your review will be discarded.")
                     .guessWindowAndAsk();

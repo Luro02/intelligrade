@@ -17,8 +17,6 @@ import javax.swing.text.JTextComponent;
 
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.Disposable;
-import com.intellij.openapi.application.ApplicationManager;
-import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.MessageType;
 import com.intellij.openapi.wm.ToolWindowManager;
@@ -28,7 +26,6 @@ import com.intellij.ui.SearchTextField;
 import com.intellij.ui.components.JBPanel;
 import com.intellij.ui.components.JBRadioButton;
 import com.intellij.util.concurrency.annotations.RequiresEdt;
-import edu.kit.kastel.sdq.artemis4j.ArtemisNetworkException;
 import edu.kit.kastel.sdq.artemis4j.grading.CorrectionRound;
 import edu.kit.kastel.sdq.artemis4j.grading.PackedAssessment;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingExercise;
@@ -39,6 +36,7 @@ import edu.kit.kastel.sdq.intelligrade.listeners.ExerciseListener;
 import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment;
 import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
 import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils;
+import edu.kit.kastel.sdq.intelligrade.utils.LatestRequestRunner;
 import edu.kit.kastel.sdq.intelligrade.widgets.FlowHideLayout;
 import edu.kit.kastel.sdq.intelligrade.widgets.FlowWrapLayout;
 import edu.kit.kastel.sdq.intelligrade.widgets.TextBuilder;
@@ -47,11 +45,11 @@ import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.Nullable;
 
 public class BacklogPanel extends JPanel {
-    private static final Logger LOG = Logger.getInstance(BacklogPanel.class);
-
     private static final String SHOWN_SUBMISSIONS_TEXT = "Showing %d/%d";
 
     private final Project project;
+    private final LatestRequestRunner requestRunner;
+
     private final SearchTextField searchField;
     private CorrectionRound selectedRound = CorrectionRound.FIRST;
     private final ButtonGroup buttonGroup;
@@ -64,6 +62,7 @@ public class BacklogPanel extends JPanel {
     BacklogPanel(Disposable parentDisposable, Project project) {
         super(new MigLayout("wrap 1", "[grow]"));
         this.project = project;
+        this.requestRunner = new LatestRequestRunner(project);
 
         // The text search field is supposed to grow
         var filterPanel = new JBPanel<>(new FlowWrapLayout(List.of(
@@ -155,74 +154,73 @@ public class BacklogPanel extends JPanel {
     }
 
     private void refresh() {
-        ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            if (ProjectState.getInstance(project).getActiveExercise().isEmpty()) {
-                return;
-            }
+        this.requestRunner
+                .fetchArtemis(() -> {
+                    if (ProjectState.getInstance(project).getActiveExercise().isEmpty()) {
+                        return new ArrayList<PackedAssessment>();
+                    }
 
-            var exercise = ProjectState.getInstance(project).getActiveExercise().orElseThrow();
+                    var exercise = ProjectState.getInstance(project)
+                            .getActiveExercise()
+                            .orElseThrow();
 
-            List<PackedAssessment> assessments;
+                    var fetchedAssessments = new ArrayList<>(exercise.fetchMyAssessments());
+                    // Sort by submission date, which matches the ordering in the Artemis backlog
+                    fetchedAssessments.sort(
+                            Comparator.comparing(a -> a.submission().getSubmissionDate()));
 
-            try {
-                assessments = exercise.fetchMyAssessments();
-            } catch (ArtemisNetworkException ex) {
-                LOG.warn(ex);
-                ArtemisUtils.displayNetworkErrorBalloon("Failed to fetch backlog", ex);
-                ApplicationManager.getApplication().invokeLater(() -> {
+                    return fetchedAssessments;
+                })
+                .withErrorNotification("Failed to fetch backlog")
+                .onFailureInEdt(_ -> {
                     this.backlogList.removeAll();
                     this.updateUI();
-                });
-                return;
-            }
+                })
+                .thenIf(
+                        () -> ProjectState.getInstance(project)
+                                .getActiveExercise()
+                                .isPresent(),
+                        assessments -> {
+                            var exercise = ProjectState.getInstance(project)
+                                    .getActiveExercise()
+                                    .orElseThrow();
 
-            updateAssessments(assessments, exercise);
-        });
-    }
+                            CorrectionRound roundToSelect = null;
+                            if (!assessments.isEmpty()) {
+                                // The first one will be the oldest date, and the last one the newest date.
+                                //
+                                // Find the last assessment that has been submitted:
+                                var latestSubmission = assessments.stream()
+                                        // If the assessment has not been submitted, it has no completion date -> skip
+                                        // these
+                                        .filter(PackedAssessment::isSubmitted)
+                                        // This shouldn't be necessary, but just to be safe:
+                                        .filter(packedAssessment ->
+                                                packedAssessment.result().completionDate() != null)
+                                        // The dates are sorted from the oldest (smallest) to the newest (largest),
+                                        // thus the max is the latest date
+                                        .max(Comparator.comparing(packedAssessment ->
+                                                packedAssessment.result().completionDate()))
+                                        // This can happen if no assessment has been submitted yet
+                                        .orElse(assessments.getFirst());
+                                roundToSelect = latestSubmission.round();
+                            }
 
-    private void updateAssessments(List<PackedAssessment> assessments, @NonNull ProgrammingExercise exercise) {
-        var fetchedAssessments = new ArrayList<>(assessments);
-        // Sort by submission date, which matches the ordering in the Artemis backlog
-        fetchedAssessments.sort(Comparator.comparing(a -> a.submission().getSubmissionDate()));
+                            this.lastFetchedAssessments = assessments;
+                            selectRound(roundToSelect);
 
-        CorrectionRound roundToSelect = null;
-        if (!fetchedAssessments.isEmpty()) {
-            // The first one will be the oldest date, and the last one the newest date.
-            //
-            // Find the last assessment that has been submitted:
-            var latestSubmission = fetchedAssessments.stream()
-                    // If the assessment has not been submitted, it has no completion date -> skip these
-                    .filter(PackedAssessment::isSubmitted)
-                    // This shouldn't be necessary, but just to be safe:
-                    .filter(packedAssessment -> packedAssessment.result().completionDate() != null)
-                    // The dates are sorted from the oldest (smallest) to the newest (largest),
-                    // thus the max is the latest date
-                    .max(Comparator.comparing(
-                            packedAssessment -> packedAssessment.result().completionDate()))
-                    // This can happen if no assessment has been submitted yet
-                    .orElse(fetchedAssessments.getFirst());
-            roundToSelect = latestSubmission.round();
-        }
+                            // Notify anyone interested that the assessments in the backlog have changed
+                            project.getMessageBus()
+                                    .syncPublisher(ExerciseListener.TOPIC)
+                                    .assessmentsChanged(
+                                            exercise, Collections.unmodifiableList(this.lastFetchedAssessments));
 
-        var selectedRoundFromFetch = roundToSelect;
-        ApplicationManager.getApplication().invokeLater(() -> {
-            if (project.isDisposed()) {
-                return;
-            }
+                            this.reloadBacklogUI();
 
-            this.lastFetchedAssessments = fetchedAssessments;
-            selectRound(selectedRoundFromFetch);
-
-            // Notify anyone interested that the assessments in the backlog have changed
-            project.getMessageBus()
-                    .syncPublisher(ExerciseListener.TOPIC)
-                    .assessmentsChanged(exercise, Collections.unmodifiableList(this.lastFetchedAssessments));
-
-            this.reloadBacklogUI();
-
-            // Tell the user that we've done something
-            ToolWindowManager.getInstance(project).notifyByBalloon("Artemis", MessageType.INFO, "Backlog updated");
-        });
+                            // Tell the user that we've done something
+                            ToolWindowManager.getInstance(project)
+                                    .notifyByBalloon("Artemis", MessageType.INFO, "Backlog updated");
+                        });
     }
 
     private void selectRound(@Nullable CorrectionRound round) {

@@ -53,6 +53,7 @@ import edu.kit.kastel.sdq.intelligrade.extensions.settings.ThemeColor;
 import edu.kit.kastel.sdq.intelligrade.listeners.AssessmentStateListener;
 import edu.kit.kastel.sdq.intelligrade.state.ActiveAssessment;
 import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
+import edu.kit.kastel.sdq.intelligrade.utils.IntellijUtils;
 import edu.kit.kastel.sdq.intelligrade.utils.KeyPress;
 import edu.kit.kastel.sdq.intelligrade.widgets.FlowWrapLayout;
 import edu.kit.kastel.sdq.intelligrade.widgets.TextBuilder;
@@ -135,7 +136,7 @@ public class GradingPanel extends SimpleToolWindowPanel {
         var panel = new JBPanel<>(new FlowWrapLayout(
                 5, "fill, gap 0", assessmentButtonSizeGroups, JBUI.scale(MINIMUM_WRAPPED_ASSESSMENT_BUTTON_WIDTH)));
         for (var mistakeType : mistakeTypes) {
-            var button = ExercisePanel.createWrappingButton(
+            var button = IntellijUtils.createWrappingButton(
                     mistakeType.getButtonText().translateTo(LOCALE));
 
             // no tooltip for custom comment

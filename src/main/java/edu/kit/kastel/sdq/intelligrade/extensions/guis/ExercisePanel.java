@@ -5,7 +5,6 @@ import java.awt.event.ItemEvent;
 import java.util.ArrayList;
 import java.util.List;
 
-import javax.swing.JButton;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.ScrollPaneConstants;
@@ -13,7 +12,6 @@ import javax.swing.text.JTextComponent;
 
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
-import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.ui.componentsList.components.ScrollablePanel;
 import com.intellij.openapi.ui.ComboBox;
@@ -31,19 +29,18 @@ import edu.kit.kastel.sdq.artemis4j.grading.Exam;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingExercise;
 import edu.kit.kastel.sdq.artemis4j.grading.User;
 import edu.kit.kastel.sdq.artemis4j.grading.penalty.GradingConfig;
+import edu.kit.kastel.sdq.intelligrade.listeners.ArtemisConnectionListener;
 import edu.kit.kastel.sdq.intelligrade.listeners.ExerciseListener;
 import edu.kit.kastel.sdq.intelligrade.state.ArtemisConnectionService;
+import edu.kit.kastel.sdq.intelligrade.state.ArtemisConnectionState;
 import edu.kit.kastel.sdq.intelligrade.state.ProjectState;
-import edu.kit.kastel.sdq.intelligrade.utils.ArtemisUtils;
-import edu.kit.kastel.sdq.intelligrade.utils.RequestCounter;
+import edu.kit.kastel.sdq.intelligrade.utils.LatestRequestRunner;
 import edu.kit.kastel.sdq.intelligrade.widgets.TextBuilder;
 import net.miginfocom.swing.MigLayout;
 import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.Nullable;
 
 public class ExercisePanel extends SimpleToolWindowPanel {
-    private static final Logger LOG = Logger.getInstance(ExercisePanel.class);
-
     private final Project project;
 
     private final JTextComponent connectedLabel;
@@ -55,10 +52,10 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
     // The handlers are invoked asynchronously, these keep track of the current request to filter
     // out old ones that are no longer relevant.
-    private final RequestCounter connectionRequestId = new RequestCounter();
-    private final RequestCounter courseRequestId = new RequestCounter();
-    private final RequestCounter examRequestId = new RequestCounter();
-    private final RequestCounter compatibleExerciseRequestId = new RequestCounter();
+    private final LatestRequestRunner connectionRunner;
+    private final LatestRequestRunner courseRunner;
+    private final LatestRequestRunner examRunner;
+    private final LatestRequestRunner exerciseRunner;
 
     /**
      * Returns a {@link ComboBox} that resizes with the parent window.
@@ -76,6 +73,10 @@ public class ExercisePanel extends SimpleToolWindowPanel {
         super(true, true);
 
         this.project = project;
+        this.connectionRunner = new LatestRequestRunner(project);
+        this.courseRunner = new LatestRequestRunner(project);
+        this.examRunner = new LatestRequestRunner(project);
+        this.exerciseRunner = new LatestRequestRunner(project);
 
         this.connectedLabel = TextBuilder.immutable("")
                 .horizontalAlignment(TextBuilder.Alignment.CENTER)
@@ -121,9 +122,12 @@ public class ExercisePanel extends SimpleToolWindowPanel {
                 ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
                 ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER));
 
+        var connectionService = ApplicationManager.getApplication().getService(ArtemisConnectionService.class);
         ApplicationManager.getApplication()
-                .getService(ArtemisConnectionService.class)
-                .listenForChange(this::handleConnectionChange, parentDisposable);
+                .getMessageBus()
+                .connect(parentDisposable)
+                .subscribe(ArtemisConnectionListener.TOPIC, this::handleConnectionStateChanged);
+        handleConnectionStateChanged(connectionService.getState());
 
         // The config can define which exercise it is allowed for. intelligrade automatically selects one
         // based on that if the currently selected one is not allowed or none is selected.
@@ -135,10 +139,6 @@ public class ExercisePanel extends SimpleToolWindowPanel {
                 ExercisePanel.this.selectExerciseForConfig(config);
             }
         });
-    }
-
-    static JButton createWrappingButton(String text) {
-        return new JButton("<html><body style='text-align: center;'>" + text + "</body></html>");
     }
 
     @RequiresEdt
@@ -176,41 +176,19 @@ public class ExercisePanel extends SimpleToolWindowPanel {
     @RequiresEdt
     private void loadExercises(
             Course selectedCourse, OptionalExam selectedExam, GradingConfig.@Nullable GradingConfigDTO config) {
-        int requestId = this.examRequestId.next();
         setExerciseItems(List.of());
         publishExerciseChanged(null);
 
-        ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            List<ProgrammingExercise> exercises;
-            try {
-                exercises = selectedExam.exercises(selectedCourse);
-            } catch (ArtemisNetworkException ex) {
-                LOG.warn(ex);
-                ArtemisUtils.displayNetworkErrorBalloon("Failed to fetch exercise info", ex);
-                return;
-            }
-
-            ApplicationManager.getApplication().invokeLater(() -> {
-                if (project.isDisposed()
-                        || !this.examRequestId.isCurrent(requestId)
-                        || examSelector.getSelectedItem() != selectedExam
-                        || courseSelector.getSelectedItem() != selectedCourse) {
-                    return;
-                }
-
-                setExerciseItems(exercises);
-                selectExerciseForConfig(config);
-                updateUI();
-            });
-        });
-    }
-
-    private static <T extends ProgrammingExercise> List<T> sortExercises(List<T> exercises) {
-        List<T> result = new ArrayList<>(exercises);
-
-        result.sort((a, b) -> CharSequence.compare(a.getTitle(), b.getTitle()));
-
-        return result;
+        this.examRunner
+                .fetchArtemis(() -> selectedExam.exercises(selectedCourse))
+                .withErrorNotification("Failed to fetch exercise info for exam '%s'".formatted(selectedExam))
+                .thenIf(
+                        () -> examSelector.getSelectedItem() == selectedExam
+                                && courseSelector.getSelectedItem() == selectedCourse,
+                        exercises -> {
+                            setExerciseItems(exercises);
+                            selectExerciseForConfig(config);
+                        });
     }
 
     @RequiresEdt
@@ -224,35 +202,17 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
     @RequiresEdt
     private void loadCourse(Course course) {
-        int requestId = this.courseRequestId.next();
         clearExamItems();
         setExerciseItems(List.of());
         publishExerciseChanged(null);
 
-        ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            List<Exam> exams;
-            try {
-                exams = course.getExams();
-            } catch (ArtemisNetworkException ex) {
-                LOG.warn(ex);
-                ArtemisUtils.displayNetworkErrorBalloon("Failed to fetch exam info", ex);
-                return;
-            }
-
-            ApplicationManager.getApplication().invokeLater(() -> {
-                // sanity check given that there is no guarantee when this lambda will be executed,
-                // it might happen much later in which case it should not influence the current ui
-                if (project.isDisposed()
-                        || !this.courseRequestId.isCurrent(requestId)
-                        || courseSelector.getSelectedItem() != course) {
-                    return;
-                }
-
-                setExamItems(exams);
-                selectExamAndExerciseForConfig(course, getLoadedGradingConfig());
-                updateUI();
-            });
-        });
+        this.courseRunner
+                .fetchArtemis(course::getExams)
+                .withErrorNotification("Failed to fetch exam info for course %d".formatted(course.getId()))
+                .thenIf(() -> courseSelector.getSelectedItem() == course, exams -> {
+                    setExamItems(exams);
+                    selectExamAndExerciseForConfig(course, getLoadedGradingConfig());
+                });
     }
 
     private GradingConfig.@Nullable GradingConfigDTO getLoadedGradingConfig() {
@@ -263,7 +223,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
     @RequiresEdt
     private void selectExamAndExerciseForConfig(Course course, GradingConfig.@Nullable GradingConfigDTO config) {
-        compatibleExerciseRequestId.next();
+        this.exerciseRunner.invalidate();
 
         var selectedExam = (OptionalExam) examSelector.getSelectedItem();
         if (selectedExam == null) {
@@ -281,7 +241,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
     @RequiresEdt
     private void selectExerciseForConfig(GradingConfig.@Nullable GradingConfigDTO config) {
-        compatibleExerciseRequestId.next();
+        this.exerciseRunner.invalidate();
 
         if (exerciseSelector.getItemCount() == 0) {
             publishExerciseChanged(null);
@@ -314,36 +274,27 @@ public class ExercisePanel extends SimpleToolWindowPanel {
     }
 
     @RequiresEdt
+    private void selectExerciseAt(int index) {
+        updateSelectors(() -> exerciseSelector.setSelectedIndex(index));
+        publishSelectedExercise();
+    }
+
+    @RequiresEdt
     private void findAndSelectCompatibleExercise(Course course, GradingConfig.GradingConfigDTO config) {
-        int requestId = this.compatibleExerciseRequestId.next();
         var exams = getExamItems();
 
-        ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            OptionalExam compatibleExam;
-            try {
-                compatibleExam = findCompatibleExam(course, exams, config);
-            } catch (ArtemisNetworkException ex) {
-                LOG.warn(ex);
-                ArtemisUtils.displayNetworkErrorBalloon("Failed to fetch exercise info", ex);
-                return;
-            }
+        this.exerciseRunner
+                .fetchArtemis(() -> findCompatibleExam(course, exams, config))
+                .withErrorNotification("Failed to fetch exercise info")
+                .thenIf(() -> courseSelector.getSelectedItem() == course, compatibleExam -> {
+                    if (compatibleExam == null) {
+                        publishExerciseChanged(null);
+                        return;
+                    }
 
-            ApplicationManager.getApplication().invokeLater(() -> {
-                if (project.isDisposed()
-                        || !this.compatibleExerciseRequestId.isCurrent(requestId)
-                        || courseSelector.getSelectedItem() != course) {
-                    return;
-                }
-
-                if (compatibleExam == null) {
-                    publishExerciseChanged(null);
-                    return;
-                }
-
-                selectExam(compatibleExam);
-                loadExercises(course, compatibleExam, config);
-            });
-        });
+                    updateSelectors(() -> examSelector.setSelectedItem(compatibleExam));
+                    loadExercises(course, compatibleExam, config);
+                });
     }
 
     @RequiresBackgroundThread
@@ -371,7 +322,7 @@ public class ExercisePanel extends SimpleToolWindowPanel {
     }
 
     @RequiresEdt
-    private void setExamItems(List<Exam> exams) {
+    private void setExamItems(Iterable<? extends Exam> exams) {
         updateSelectors(() -> {
             examSelector.removeAllItems();
             examSelector.addItem(new OptionalExam(null));
@@ -387,24 +338,13 @@ public class ExercisePanel extends SimpleToolWindowPanel {
     }
 
     @RequiresEdt
-    private void setExerciseItems(List<ProgrammingExercise> exercises) {
+    private void setExerciseItems(Iterable<? extends ProgrammingExercise> exercises) {
         updateSelectors(() -> {
             exerciseSelector.removeAllItems();
             for (var exercise : exercises) {
                 exerciseSelector.addItem(exercise);
             }
         });
-    }
-
-    @RequiresEdt
-    private void selectExam(OptionalExam exam) {
-        updateSelectors(() -> examSelector.setSelectedItem(exam));
-    }
-
-    @RequiresEdt
-    private void selectExerciseAt(int index) {
-        updateSelectors(() -> exerciseSelector.setSelectedIndex(index));
-        publishSelectedExercise();
     }
 
     @RequiresEdt
@@ -423,66 +363,61 @@ public class ExercisePanel extends SimpleToolWindowPanel {
     }
 
     @RequiresEdt
-    private void handleConnectionChange(ArtemisConnection connection) {
-        activeConnection = connection;
-        int requestId = connectionRequestId.next();
+    private void handleConnectionStateChanged(ArtemisConnectionState state) {
+        this.activeConnection =
+                state instanceof ArtemisConnectionState.Connected(ArtemisConnection connection) ? connection : null;
+        this.connectionRunner.invalidate();
         updateSelectors(courseSelector::removeAllItems);
         clearExamItems();
         setExerciseItems(List.of());
         publishExerciseChanged(null);
 
-        if (connection != null) {
+        if (state instanceof ArtemisConnectionState.Connecting) {
             connectedLabel.setText("⌛ Loading...");
             connectedLabel.setForeground(JBColor.YELLOW);
-            ApplicationManager.getApplication()
-                    .executeOnPooledThread(() -> loadConnectionCourses(connection, requestId));
-            updateUI();
             return;
         }
 
-        connectedLabel.setText("❌ Not connected");
-        connectedLabel.setForeground(JBColor.RED);
-        updateUI();
-    }
-
-    @RequiresBackgroundThread
-    private void loadConnectionCourses(ArtemisConnection connection, int requestId) {
-        User assessor;
-        List<Course> courses;
-        try {
-            assessor = connection.getAssessor();
-            courses = connection.getCourses();
-        } catch (ArtemisNetworkException ex) {
-            LOG.warn(ex);
-            ArtemisUtils.displayNetworkErrorBalloon("Failed to fetch course info", ex);
+        if (state instanceof ArtemisConnectionState.Failed(String message)) {
+            connectedLabel.setText("❌ Not connected: " + message);
+            connectedLabel.setForeground(JBColor.RED);
             return;
         }
 
-        ApplicationManager.getApplication().invokeLater(() -> {
-            if (project.isDisposed()
-                    || !this.connectionRequestId.isCurrent(requestId)
-                    || activeConnection != connection) {
-                return;
-            }
+        if (!(state instanceof ArtemisConnectionState.Connected(ArtemisConnection connection))) {
+            connectedLabel.setText("❌ Not connected");
+            connectedLabel.setForeground(JBColor.RED);
+            return;
+        }
 
-            connectedLabel.setText("✔ Connected to %s as %s"
-                    .formatted(connection.getClient().getInstance().getDomain(), assessor.getLogin()));
-            connectedLabel.setForeground(JBColor.GREEN);
-            updateSelectors(() -> {
-                for (Course course : courses) {
-                    courseSelector.addItem(course);
-                }
-            });
-            var selectedCourse = (Course) courseSelector.getSelectedItem();
-            if (selectedCourse != null) {
-                loadCourse(selectedCourse);
-            }
-            updateUI();
-        });
+        connectedLabel.setText("⌛ Loading...");
+        connectedLabel.setForeground(JBColor.YELLOW);
+
+        this.connectionRunner
+                .fetchArtemis(() -> new ArtemisConnectionData(connection.getAssessor(), connection.getCourses()))
+                .withErrorNotification("Failed to fetch course info")
+                .thenIf(() -> activeConnection == connection, data -> {
+                    connectedLabel.setText("✔ Connected to %s as %s"
+                            .formatted(
+                                    connection.getClient().getInstance().getDomain(),
+                                    data.assessor().getLogin()));
+                    connectedLabel.setForeground(JBColor.GREEN);
+                    updateSelectors(() -> {
+                        for (Course course : data.courses()) {
+                            courseSelector.addItem(course);
+                        }
+                    });
+                    var selectedCourse = (Course) courseSelector.getSelectedItem();
+                    if (selectedCourse != null) {
+                        loadCourse(selectedCourse);
+                    }
+                });
     }
+
+    private record ArtemisConnectionData(User assessor, List<Course> courses) {}
 
     private record OptionalExam(Exam exam) {
-        public List<ProgrammingExercise> exercises(Course course) throws ArtemisNetworkException {
+        private List<ProgrammingExercise> exercises(Course course) throws ArtemisNetworkException {
             if (exam == null) {
                 return sortExercises(course.getProgrammingExercises());
             }
@@ -491,6 +426,14 @@ public class ExercisePanel extends SimpleToolWindowPanel {
             for (var group : exam.getExerciseGroups()) {
                 result.addAll(sortExercises(group.getProgrammingExercises()));
             }
+
+            return result;
+        }
+
+        private static <T extends ProgrammingExercise> List<T> sortExercises(List<? extends T> exercises) {
+            List<T> result = new ArrayList<>(exercises);
+
+            result.sort((left, right) -> CharSequence.compare(left.getTitle(), right.getTitle()));
 
             return result;
         }
