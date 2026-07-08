@@ -14,6 +14,7 @@ import javax.swing.table.AbstractTableModel;
 
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.ui.DocumentAdapter;
@@ -125,6 +126,7 @@ public final class SubmissionsInstructorDialog extends DialogWrapper {
                         ? new ArrayList<ProgrammingSubmissionWithResults>()
                         : exercise.fetchAllSubmissions())
                 .withErrorNotification("Failed to fetch assessments")
+                .withModalityState(ModalityState.stateForComponent(getRootPane()))
                 .thenIf(
                         () -> ProjectState.getInstance(project)
                                         .getActiveExercise()

@@ -10,6 +10,7 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import edu.kit.kastel.sdq.artemis4j.ArtemisNetworkException;
@@ -54,6 +55,7 @@ public final class LatestRequestRunner {
         private Function<? super Exception, String> buildErrorMessage;
         private Consumer<? super Exception> onFailureInEdt;
         private @NonNull List<Class<? extends Exception>> exceptions;
+        private @NonNull ModalityState modalityState;
         private boolean showErrorNotification;
         private boolean showErrorLog;
 
@@ -62,6 +64,7 @@ public final class LatestRequestRunner {
             this.supplier = supplier;
             this.requests = requests;
             this.exceptions = List.of();
+            this.modalityState = ModalityState.defaultModalityState();
             this.showErrorNotification = false;
             this.showErrorLog = true;
         }
@@ -70,6 +73,11 @@ public final class LatestRequestRunner {
         public final RequestBuilder<T> handle(Class<? extends Exception>... exceptions) {
             this.exceptions = Arrays.asList(exceptions);
 
+            return this;
+        }
+
+        public RequestBuilder<T> withModalityState(@NonNull ModalityState modalityState) {
+            this.modalityState = modalityState;
             return this;
         }
 
@@ -167,13 +175,18 @@ public final class LatestRequestRunner {
         }
 
         private void invokeOnEDTIfRelevant(int requestId, BooleanSupplier stillRelevant, Runnable action) {
-            ApplicationManager.getApplication().invokeLater(() -> {
-                if (project.isDisposed() || !requests.isCurrent(requestId) || !stillRelevant.getAsBoolean()) {
-                    return;
-                }
+            ApplicationManager.getApplication()
+                    .invokeLater(
+                            () -> {
+                                if (project.isDisposed()
+                                        || !requests.isCurrent(requestId)
+                                        || !stillRelevant.getAsBoolean()) {
+                                    return;
+                                }
 
-                action.run();
-            });
+                                action.run();
+                            },
+                            modalityState);
         }
     }
 

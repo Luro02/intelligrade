@@ -1,7 +1,6 @@
 /* Licensed under EPL-2.0 2026. */
 package edu.kit.kastel.sdq.intelligrade.login;
 
-import java.lang.reflect.InvocationTargetException;
 import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -9,8 +8,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import javax.swing.SwingUtilities;
-
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.ui.jcef.JBCefBrowser;
@@ -62,11 +60,7 @@ public final class ArtemisBrowserLoginSession {
 
     @RequiresBackgroundThread
     public JBCefCookie requestJwtCookie() throws InterruptedException, LoginCancelledException {
-        try {
-            SwingUtilities.invokeAndWait(this::open);
-        } catch (InvocationTargetException exception) {
-            rethrow(exception.getCause());
-        }
+        ApplicationManager.getApplication().invokeAndWait(this::open);
 
         finished.await();
 
@@ -125,7 +119,7 @@ public final class ArtemisBrowserLoginSession {
         jwtCookie = cookie;
         stopCookieChecks();
         finished.countDown();
-        SwingUtilities.invokeLater(() -> {
+        ApplicationManager.getApplication().invokeLater(() -> {
             if (dialog != null && !dialog.isDisposed()) {
                 dialog.close(DialogWrapper.OK_EXIT_CODE);
             }
