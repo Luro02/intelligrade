@@ -10,5 +10,15 @@ public sealed interface ArtemisConnectionState {
 
     record Connected(ArtemisConnection connection) implements ArtemisConnectionState {}
 
-    record Failed(String message) implements ArtemisConnectionState {}
+    record Failed(String message, FailureTarget target) implements ArtemisConnectionState {
+        public Failed(String message) {
+            this(message, FailureTarget.GENERAL);
+        }
+    }
+
+    enum FailureTarget {
+        GENERAL,
+        URL,
+        CREDENTIALS
+    }
 }

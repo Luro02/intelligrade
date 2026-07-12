@@ -1,17 +1,16 @@
 /* Licensed under EPL-2.0 2024-2026. */
 package edu.kit.kastel.sdq.intelligrade.extensions.guis;
 
+import java.awt.CardLayout;
 import java.awt.event.ItemEvent;
 import java.util.ArrayList;
 import java.util.List;
 
 import javax.swing.JPanel;
-import javax.swing.JScrollPane;
 import javax.swing.ScrollPaneConstants;
 import javax.swing.text.JTextComponent;
 
 import com.intellij.openapi.Disposable;
-import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.ui.componentsList.components.ScrollablePanel;
 import com.intellij.openapi.ui.ComboBox;
@@ -20,6 +19,7 @@ import com.intellij.openapi.wm.ToolWindow;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.TitledSeparator;
 import com.intellij.ui.components.JBLabel;
+import com.intellij.ui.components.JBScrollPane;
 import com.intellij.util.concurrency.annotations.RequiresBackgroundThread;
 import com.intellij.util.concurrency.annotations.RequiresEdt;
 import edu.kit.kastel.sdq.artemis4j.ArtemisNetworkException;
@@ -29,7 +29,6 @@ import edu.kit.kastel.sdq.artemis4j.grading.Exam;
 import edu.kit.kastel.sdq.artemis4j.grading.ProgrammingExercise;
 import edu.kit.kastel.sdq.artemis4j.grading.User;
 import edu.kit.kastel.sdq.artemis4j.grading.penalty.GradingConfig;
-import edu.kit.kastel.sdq.intelligrade.listeners.ArtemisConnectionListener;
 import edu.kit.kastel.sdq.intelligrade.listeners.ExerciseListener;
 import edu.kit.kastel.sdq.intelligrade.state.ArtemisConnectionService;
 import edu.kit.kastel.sdq.intelligrade.state.ArtemisConnectionState;
@@ -41,8 +40,13 @@ import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.Nullable;
 
 public class ExercisePanel extends SimpleToolWindowPanel {
+    private static final String LOGIN_CARD = "login";
+    private static final String EXERCISE_CARD = "exercise";
+
     private final Project project;
 
+    private final CardLayout cardLayout = new CardLayout();
+    private final JPanel cards = new JPanel(cardLayout);
     private final JTextComponent connectedLabel;
     private final ComboBox<Course> courseSelector;
     private final ComboBox<OptionalExam> examSelector;
@@ -117,17 +121,15 @@ public class ExercisePanel extends SimpleToolWindowPanel {
         content.add(new TitledSeparator("Backlog"), "spanx 2, growx");
         content.add(new BacklogPanel(parentDisposable, project), "spanx 2, growx");
 
-        setContent(new JScrollPane(
+        var exerciseScrollPane = new JBScrollPane(
                 content,
                 ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
-                ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER));
+                ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        cards.add(exerciseScrollPane, EXERCISE_CARD);
+        cards.add(new ArtemisLoginPanel(parentDisposable, project), LOGIN_CARD);
+        setContent(cards);
 
-        var connectionService = ApplicationManager.getApplication().getService(ArtemisConnectionService.class);
-        ApplicationManager.getApplication()
-                .getMessageBus()
-                .connect(parentDisposable)
-                .subscribe(ArtemisConnectionListener.TOPIC, this::handleConnectionStateChanged);
-        handleConnectionStateChanged(connectionService.getState());
+        ArtemisConnectionService.getInstance(project).subscribe(parentDisposable, this::handleConnectionStateChanged);
 
         // The config can define which exercise it is allowed for. intelligrade automatically selects one
         // based on that if the currently selected one is not allowed or none is selected.
@@ -364,6 +366,9 @@ public class ExercisePanel extends SimpleToolWindowPanel {
 
     @RequiresEdt
     private void handleConnectionStateChanged(ArtemisConnectionState state) {
+        // Depending on the connection state, we will show the login or exercise
+        cardLayout.show(cards, state instanceof ArtemisConnectionState.Connected ? EXERCISE_CARD : LOGIN_CARD);
+
         this.activeConnection =
                 state instanceof ArtemisConnectionState.Connected(ArtemisConnection connection) ? connection : null;
         this.connectionRunner.invalidate();
@@ -372,46 +377,30 @@ public class ExercisePanel extends SimpleToolWindowPanel {
         setExerciseItems(List.of());
         publishExerciseChanged(null);
 
-        if (state instanceof ArtemisConnectionState.Connecting) {
-            connectedLabel.setText("⌛ Loading...");
-            connectedLabel.setForeground(JBColor.YELLOW);
-            return;
-        }
+        if (this.activeConnection != null) {
+            // Assuming a new connection has been established, we need to reload the courses
+            var connection = this.activeConnection;
+            this.connectionRunner
+                    .fetchArtemis(() -> new ArtemisConnectionData(connection.getAssessor(), connection.getCourses()))
+                    .withErrorNotification("Failed to fetch course info")
+                    .thenIf(() -> this.activeConnection == connection, data -> {
+                        connectedLabel.setText("✔ Connected to %s as %s"
+                                .formatted(
+                                        connection.getClient().getInstance().getDomain(),
+                                        data.assessor().getLogin()));
+                        connectedLabel.setForeground(JBColor.GREEN);
 
-        if (state instanceof ArtemisConnectionState.Failed(String message)) {
-            connectedLabel.setText("❌ Not connected: " + message);
-            connectedLabel.setForeground(JBColor.RED);
-            return;
-        }
-
-        if (!(state instanceof ArtemisConnectionState.Connected(ArtemisConnection connection))) {
-            connectedLabel.setText("❌ Not connected");
-            connectedLabel.setForeground(JBColor.RED);
-            return;
-        }
-
-        connectedLabel.setText("⌛ Loading...");
-        connectedLabel.setForeground(JBColor.YELLOW);
-
-        this.connectionRunner
-                .fetchArtemis(() -> new ArtemisConnectionData(connection.getAssessor(), connection.getCourses()))
-                .withErrorNotification("Failed to fetch course info")
-                .thenIf(() -> activeConnection == connection, data -> {
-                    connectedLabel.setText("✔ Connected to %s as %s"
-                            .formatted(
-                                    connection.getClient().getInstance().getDomain(),
-                                    data.assessor().getLogin()));
-                    connectedLabel.setForeground(JBColor.GREEN);
-                    updateSelectors(() -> {
-                        for (Course course : data.courses()) {
-                            courseSelector.addItem(course);
+                        updateSelectors(() -> {
+                            for (Course course : data.courses()) {
+                                courseSelector.addItem(course);
+                            }
+                        });
+                        var selectedCourse = (Course) courseSelector.getSelectedItem();
+                        if (selectedCourse != null) {
+                            loadCourse(selectedCourse);
                         }
                     });
-                    var selectedCourse = (Course) courseSelector.getSelectedItem();
-                    if (selectedCourse != null) {
-                        loadCourse(selectedCourse);
-                    }
-                });
+        }
     }
 
     private record ArtemisConnectionData(User assessor, List<Course> courses) {}
