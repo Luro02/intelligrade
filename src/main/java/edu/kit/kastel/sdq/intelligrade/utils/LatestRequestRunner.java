@@ -3,11 +3,11 @@ package edu.kit.kastel.sdq.intelligrade.utils;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
-import java.util.function.Predicate;
 
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
@@ -44,13 +44,13 @@ public final class LatestRequestRunner {
                 .withErrorNotification();
     }
 
-    public <T> RequestBuilder<T> fetch(FallibleSupplier<? extends T> supplier) {
-        return new RequestBuilder<T>(supplier, requests, project).withoutErrorNotification();
+    public <T> RequestBuilder<T> fetch(Callable<? extends T> callable) {
+        return new RequestBuilder<T>(callable, requests, project).withoutErrorNotification();
     }
 
     public static final class RequestBuilder<T> {
         private final Project project;
-        private final FallibleSupplier<? extends T> supplier;
+        private final Callable<? extends T> callable;
         private final RequestCounter requests;
         private Function<? super Exception, String> buildErrorMessage;
         private Consumer<? super Exception> onFailureInEdt;
@@ -59,9 +59,9 @@ public final class LatestRequestRunner {
         private boolean showErrorNotification;
         private boolean showErrorLog;
 
-        private RequestBuilder(FallibleSupplier<? extends T> supplier, RequestCounter requests, Project project) {
+        private RequestBuilder(Callable<? extends T> callable, RequestCounter requests, Project project) {
             this.project = project;
-            this.supplier = supplier;
+            this.callable = callable;
             this.requests = requests;
             this.exceptions = List.of();
             this.modalityState = ModalityState.defaultModalityState();
@@ -115,63 +115,61 @@ public final class LatestRequestRunner {
 
         public void thenIf(BooleanSupplier stillRelevant, Consumer<? super T> apply) {
             int requestId = this.requests.next();
-
-            Predicate<Exception> handlesException = exception -> {
-                for (var handledException : this.exceptions) {
-                    if (handledException.isInstance(exception)) {
-                        return true;
-                    }
-                }
-
-                return false;
-            };
-
             Runnable request = () -> {
                 try {
-                    T result = this.supplier.call();
-
+                    T result = this.callable.call();
                     invokeOnEDTIfRelevant(requestId, stillRelevant, () -> apply.accept(result));
                 } catch (Exception exception) {
-                    // pass along any exception that the code does not want to handle
-                    if (!handlesException.test(exception)) {
-                        if (exception instanceof RuntimeException runtimeException) {
-                            throw runtimeException;
-                        }
-
-                        // Checked exceptions must be handled, but the caller does not want
-                        // to handle these, which is why they are wrapped in a RuntimeException
-                        throw new IllegalStateException(exception);
-                    }
-
-                    if (this.showErrorLog) {
-                        LOG.warn(exception);
-                    }
-
-                    if (showErrorNotification) {
-                        String title = "Error";
-                        if (exception instanceof ArtemisNetworkException) {
-                            title = "Network Error";
-                        }
-
-                        var content = exception.getMessage();
-                        if (buildErrorMessage != null) {
-                            content = "%s (%s)".formatted(buildErrorMessage.apply(exception), exception.getMessage());
-                        }
-
-                        ArtemisUtils.displayGenericErrorBalloon(title, content);
-                    }
-
-                    if (onFailureInEdt != null) {
-                        invokeOnEDTIfRelevant(requestId, stillRelevant, () -> onFailureInEdt.accept(exception));
-                    }
+                    handleException(requestId, stillRelevant, exception);
                 }
             };
 
             if (ApplicationManager.getApplication().isDispatchThread()) {
                 ApplicationManager.getApplication().executeOnPooledThread(request);
-            } else {
-                request.run();
+                return;
             }
+
+            request.run();
+        }
+
+        private void handleException(int requestId, BooleanSupplier stillRelevant, Exception exception) {
+            if (!handlesException(exception)) {
+                // Pass along any exception that the code does not want to handle.
+                if (exception instanceof RuntimeException runtimeException) {
+                    throw runtimeException;
+                }
+
+                // Checked exceptions must be handled, but the caller does not want
+                // to handle these, which is why they are wrapped in a RuntimeException.
+                throw new IllegalStateException(exception);
+            }
+
+            if (this.showErrorLog) {
+                LOG.warn(exception);
+            }
+
+            showErrorNotification(exception);
+            if (onFailureInEdt != null) {
+                invokeOnEDTIfRelevant(requestId, stillRelevant, () -> onFailureInEdt.accept(exception));
+            }
+        }
+
+        private boolean handlesException(Exception exception) {
+            return this.exceptions.stream().anyMatch(handledException -> handledException.isInstance(exception));
+        }
+
+        private void showErrorNotification(Exception exception) {
+            if (!this.showErrorNotification) {
+                return;
+            }
+
+            String title = exception instanceof ArtemisNetworkException ? "Network Error" : "Error";
+            var content = exception.getMessage();
+            if (buildErrorMessage != null) {
+                content = "%s (%s)".formatted(buildErrorMessage.apply(exception), exception.getMessage());
+            }
+
+            ArtemisUtils.displayGenericErrorBalloon(title, content);
         }
 
         private void invokeOnEDTIfRelevant(int requestId, BooleanSupplier stillRelevant, Runnable action) {
@@ -193,11 +191,6 @@ public final class LatestRequestRunner {
     @FunctionalInterface
     public interface ArtemisSupplier<T> {
         T call() throws ArtemisNetworkException;
-    }
-
-    @FunctionalInterface
-    public interface FallibleSupplier<T> {
-        T call() throws Exception;
     }
 
     private static class RequestCounter {
